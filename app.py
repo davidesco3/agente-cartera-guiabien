@@ -267,25 +267,30 @@ def modal_gestion_elite():
 def modal_no_contactar():
     st.caption(
         "Listado oficial de clientes que han solicitado no ser contactados o poseen restricciones operativas. "
-        "Esta lista se sincroniza automáticamente desde Google Sheets y no se edita en la app para mantener la integridad centralizada."
+        "Esta lista se sincroniza automáticamente desde la pestaña **Cartera_Excluidos** en Google Sheets y no se edita en la app para mantener la integridad centralizada."
     )
 
     with st.spinner("Consultando lista en Google Sheets..."):
         df_nc, fuente_nc, estado_nc = no_contactar_service.fetch_dataframe()
 
-    c_m1, c_m2, c_m3 = st.columns([1, 1.5, 1.4])
+    unique_clients = df_nc["_id_clean"].nunique() if "_id_clean" in df_nc.columns else len(df_nc)
+    df_display = df_nc.drop(columns=["_id_clean"]) if "_id_clean" in df_nc.columns else df_nc
+
+    c_m1, c_m2, c_m3, c_m4 = st.columns([1, 1, 1.4, 1.5])
     with c_m1:
-        st.metric("Total Excluidos", f"{len(df_nc):,}")
+        st.metric("Pólizas", f"{len(df_display):,}")
     with c_m2:
-        st.metric("Origen de Datos", fuente_nc)
+        st.metric("Tomadores Únicos", f"{unique_clients:,}")
     with c_m3:
+        st.metric("Origen de Datos", fuente_nc)
+    with c_m4:
         st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
         st.link_button(
             "🔗 Abrir y Editar en Sheets",
             no_contactar_service.view_url,
             type="primary",
             use_container_width=True,
-            help="Abre la hoja de cálculo en una nueva pestaña para agregar, editar o retirar documentos.",
+            help="Abre la pestaña Cartera_Excluidos en Google Sheets para agregar, editar o retirar documentos.",
         )
 
     if estado_nc != "OK":
@@ -293,17 +298,19 @@ def modal_no_contactar():
     else:
         st.success("🟢 **Sincronización en vivo activa:** Todo cambio realizado en el Google Sheet se aplicará automáticamente.")
 
-    st.markdown("##### 📋 Listado Actual de Exclusiones (Solo Lectura)")
-    if not df_nc.empty:
-        col_configs = {
-            "Nº ident.fis.1": st.column_config.TextColumn("Cédula / NIT"),
-        }
-        for c in df_nc.columns:
-            if c != "Nº ident.fis.1":
-                col_configs[c] = st.column_config.TextColumn(c)
+    st.markdown("##### 📋 Pólizas y Clientes Excluidos (Solo Lectura)")
+    if not df_display.empty:
+        col_configs = {}
+        if "Nº ident" in df_display.columns:
+            col_configs["Nº ident"] = st.column_config.TextColumn("Cédula / NIT")
+        elif "Nº ident.fis.1" in df_display.columns:
+            col_configs["Nº ident.fis.1"] = st.column_config.TextColumn("Cédula / NIT")
+
+        if "Póliza" in df_display.columns:
+            col_configs["Póliza"] = st.column_config.TextColumn("Póliza")
 
         st.dataframe(
-            df_nc,
+            df_display,
             use_container_width=True,
             hide_index=True,
             column_config=col_configs,

@@ -311,20 +311,17 @@ class NoContactarService:
             df_default.to_csv(self.cache_path, index=False, encoding="utf-8")
 
     def count(self) -> int:
-        """Devuelve el total de clientes a no contactar registrados en la caché local."""
+        """Devuelve el total de pólizas/registros a no contactar registrados en la caché local."""
         self.ensure_default_file()
         try:
             df = pd.read_csv(self.cache_path, dtype=str).fillna("")
-            col = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula"])
-            series = df[col] if col in df.columns else df.iloc[:, 0]
-            ids = {clean_id_value(v) for v in series if clean_id_value(v)}
-            return len(ids)
+            return len(df)
         except Exception:
             return 0
 
     def fetch_dataframe(self) -> Tuple[pd.DataFrame, str, str]:
         """
-        Obtiene la tabla completa de No Contactar directamente desde Google Sheets.
+        Obtiene la tabla completa de No Contactar directamente desde Google Sheets (pestaña Cartera_Excluidos).
         Si la conexión falla o el acceso es restringido, recurre a la caché local.
         Retorna: (df, fuente, mensaje_estado)
         """
@@ -336,7 +333,7 @@ class NoContactarService:
 
             resp = requests.get(
                 self.url,
-                timeout=8,
+                timeout=10,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
                 verify=False,
             )
@@ -345,22 +342,25 @@ class NoContactarService:
 
             if resp.status_code == 200 and not is_html:
                 df_sheet = pd.read_csv(io.StringIO(resp.text), dtype=str).fillna("")
-                col_id = find_column_name(df_sheet, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula", "DNI"])
-                if col_id in df_sheet.columns and col_id != "Nº ident.fis.1":
-                    df_sheet.rename(columns={col_id: "Nº ident.fis.1"}, inplace=True)
-                elif "Nº ident.fis.1" not in df_sheet.columns and not df_sheet.empty:
-                    df_sheet.rename(columns={df_sheet.columns[0]: "Nº ident.fis.1"}, inplace=True)
+                # Encontrar la columna de documento
+                col_id = find_column_name(
+                    df_sheet,
+                    "Nº ident",
+                    ["Nº ident.fis.1", "Documento", "NIT", "Identificacion", "Cedula", "DNI", "No ident"],
+                )
+                if col_id in df_sheet.columns:
+                    # Crear columna normalizada para cruce seguro sin alterar el texto original
+                    df_sheet["_id_clean"] = df_sheet[col_id].apply(clean_id_value)
+                    # Descartar filas totalmente vacías
+                    df_sheet = df_sheet[df_sheet["_id_clean"] != ""]
 
-                # Limpiar identificaciones y descartar vacíos
-                df_sheet["Nº ident.fis.1"] = df_sheet["Nº ident.fis.1"].apply(clean_id_value)
-                df_sheet = df_sheet[df_sheet["Nº ident.fis.1"] != ""]
-                df_sheet.drop_duplicates(subset=["Nº ident.fis.1"], inplace=True)
-
-                # Respaldar en caché local
-                self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-                df_sheet.to_csv(self.cache_path, index=False, encoding="utf-8")
-
-                return df_sheet, "Google Sheets (Sincronización en vivo)", "OK"
+                if not df_sheet.empty:
+                    # Respaldar en caché local
+                    self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    df_sheet.to_csv(self.cache_path, index=False, encoding="utf-8")
+                    return df_sheet, "Google Sheets (Sincronización en vivo)", "OK"
+                else:
+                    warning_msg = "La hoja de Google Sheets se leyó correctamente pero no contiene registros."
 
             elif resp.status_code == 401 or is_html:
                 warning_msg = (
@@ -376,12 +376,14 @@ class NoContactarService:
         if self.cache_path.exists():
             try:
                 df_cache = pd.read_csv(self.cache_path, dtype=str).fillna("")
-                col_id = find_column_name(df_cache, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula"])
-                if col_id in df_cache.columns and col_id != "Nº ident.fis.1":
-                    df_cache.rename(columns={col_id: "Nº ident.fis.1"}, inplace=True)
-                df_cache["Nº ident.fis.1"] = df_cache["Nº ident.fis.1"].apply(clean_id_value)
-                df_cache = df_cache[df_cache["Nº ident.fis.1"] != ""]
-                df_cache.drop_duplicates(subset=["Nº ident.fis.1"], inplace=True)
+                col_id = find_column_name(
+                    df_cache,
+                    "Nº ident",
+                    ["Nº ident.fis.1", "Documento", "NIT", "Identificacion", "Cedula", "DNI", "_id_clean"],
+                )
+                if col_id in df_cache.columns:
+                    df_cache["_id_clean"] = df_cache[col_id].apply(clean_id_value)
+                    df_cache = df_cache[df_cache["_id_clean"] != ""]
 
                 if not df_cache.empty:
                     return (
@@ -392,17 +394,26 @@ class NoContactarService:
             except Exception:
                 pass
 
-        return pd.DataFrame(columns=["Nº ident.fis.1", "Motivo"]), "Sin datos", f"{warning_msg} No se pudieron cargar datos."
+        return pd.DataFrame(), "Sin datos", f"{warning_msg} No se pudieron cargar datos."
 
     def fetch_no_contactar(self) -> Tuple[Set[str], str, str]:
         """
-        Obtiene el conjunto de identificaciones a no contactar.
+        Obtiene el conjunto de identificaciones únicas a no contactar.
         Retorna: (set_de_ids, fuente_utilizada, estado_o_advertencia)
         """
         df, fuente, estado = self.fetch_dataframe()
-        if not df.empty and "Nº ident.fis.1" in df.columns:
-            ids = set(df["Nº ident.fis.1"].tolist())
-            return ids, fuente, estado
+        if not df.empty:
+            if "_id_clean" in df.columns:
+                ids = set(df["_id_clean"].tolist())
+                return ids, fuente, estado
+            col_id = find_column_name(
+                df,
+                "Nº ident",
+                ["Nº ident.fis.1", "Documento", "NIT", "Identificacion", "Cedula", "DNI"],
+            )
+            if col_id in df.columns:
+                ids = {clean_id_value(x) for x in df[col_id] if clean_id_value(x)}
+                return ids, fuente, estado
         return set(), fuente, estado
 
 
