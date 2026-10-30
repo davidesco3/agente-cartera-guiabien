@@ -172,6 +172,44 @@ def test_pipeline_complete_flow():
                 "Solución": "Salud",
                 "Resp.Cobro": "",
             },
+            # 8b: Saldo > 3,000,000 PERO Días Cartera = 0 -> NO DEBE entrar a Alto Impacto (solo > 0)! Debe quedarse en Base Depurada
+            {
+                "Nº ident.fis.1": "100010",
+                "Póliza": "POL-MORA-CERO",
+                "Operación": "Cobro",
+                "Medio Pago": "Transferencia",
+                "Dias Cartera": "0",
+                "Saldo a pagar": "4000000",
+                "Nombre Tomador": "Cliente Al Día",
+                "Solución": "Salud",
+                "Resp.Cobro": "",
+            },
+            # 8c: Periodicidad Mensual y Saldo > 1,000,000 con mora > 0 -> DEBE entrar a Alto Impacto!
+            {
+                "Nº ident.fis.1": "100011",
+                "Póliza": "POL-MENSUAL-ALTO",
+                "Operación": "Cobro",
+                "Medio Pago": "Transferencia",
+                "Dias Cartera": "8",
+                "Saldo a pagar": "1500000",
+                "Perioricidad": "Mensual",
+                "Nombre Tomador": "Cliente Mensual Alto",
+                "Solución": "Autos",
+                "Resp.Cobro": "",
+            },
+            # 8d: Periodicidad Anual y Saldo 1,500,000 (no llega a 3M) -> NO es mensual, se queda en Base Depurada
+            {
+                "Nº ident.fis.1": "100012",
+                "Póliza": "POL-ANUAL-MEDIO",
+                "Operación": "Cobro",
+                "Medio Pago": "Transferencia",
+                "Dias Cartera": "8",
+                "Saldo a pagar": "1500000",
+                "Perioricidad": "Anual",
+                "Nombre Tomador": "Cliente Anual",
+                "Solución": "Autos",
+                "Resp.Cobro": "",
+            },
             # 9: Cobro estándar regular que queda en Base Depurada
             {
                 "Nº ident.fis.1": "100008",
@@ -224,17 +262,26 @@ def test_pipeline_complete_flow():
         assert "Hola David," in msg_04
         assert "motivos no especificados" in msg_04
 
-        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45)
-        # POL-NEGATIVO tiene días = -5, NO DEBE estar en Alto Impacto!
-        assert len(dfs["Alto impacto"]) == 3
+        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45, POL-MENSUAL-ALTO: Mensual > 1M)
+        # POL-NEGATIVO (-5) y POL-MORA-CERO (0) NO DEBEN estar en Alto Impacto por mora no positiva!
+        # POL-ANUAL-MEDIO (1.5M anual) NO debe estar en Alto Impacto por no ser mensual ni > 3M.
+        assert len(dfs["Alto impacto"]) == 4
         polizas_impacto = set(dfs["Alto impacto"]["Póliza"])
-        assert polizas_impacto == {"POL-05", "POL-06", "POL-07"}
+        assert polizas_impacto == {"POL-05", "POL-06", "POL-07", "POL-MENSUAL-ALTO"}
         assert "POL-NEGATIVO" not in polizas_impacto
+        assert "POL-MORA-CERO" not in polizas_impacto
+        assert "POL-ANUAL-MEDIO" not in polizas_impacto
 
-        # Base Depurada: Contiene POL-08 y POL-NEGATIVO (mora <= 1)
+        # Motivo de Alto Impacto descriptivo
+        motivo_mensual = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-MENSUAL-ALTO", "Motivo_Alto_Impacto"].iloc[0]
+        assert "Mensual con saldo > $1.000.000" in motivo_mensual
+
+        # Base Depurada: Contiene POL-08, POL-NEGATIVO, POL-MORA-CERO y POL-ANUAL-MEDIO
         polizas_base = set(dfs["Base depurada"]["Póliza"])
         assert "POL-08" in polizas_base
         assert "POL-NEGATIVO" in polizas_base
+        assert "POL-MORA-CERO" in polizas_base
+        assert "POL-ANUAL-MEDIO" in polizas_base
 
         # Revisar Cancelación: Solo POL-99
         assert len(dfs["Revisar cancelación"]) == 1

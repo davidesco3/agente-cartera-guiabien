@@ -642,7 +642,7 @@ if "resultados_cartera" in st.session_state:
             <div class="gb-metric-card" style="border-left-color: #EF4444;">
                 <div class="gb-metric-label">Alto Impacto</div>
                 <div class="gb-metric-num" style="color: #B91C1C;">{metrics['alto_impacto']:,}</div>
-                <div style="font-size:11px; color:#64748B;">Élite / >$3M / ≥45d</div>
+                <div style="font-size:11px; color:#64748B;">Élite / &gt;$3M / ≥45d / Mensual&gt;$1M</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -749,7 +749,7 @@ if "resultados_cartera" in st.session_state:
 
     # 2. Alto Impacto
     with tabs[1]:
-        st.caption("Pólizas con alta prioridad comercial o riesgo financiero. Solo incluye registros con mora real mayor a 1 día (los días negativos o ≤ 1 se mantienen en Base Depurada).")
+        st.caption("Pólizas con alta prioridad comercial o riesgo financiero. Solo incluye registros con días de cartera estrictamente positivos (> 0): Clientes Élite, saldo > $3M, mora ≥ 45 días o periodicidad mensual con saldo > $1M.")
         st.dataframe(dfs["Alto impacto"], use_container_width=True, height=350)
 
     # 3. Débitos Fallidos

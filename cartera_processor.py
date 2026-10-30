@@ -16,6 +16,7 @@ from config import (
     MENSAJE_DEBITO_FALLIDO_TEMPLATE,
     NO_CONTACTAR_CACHE_PATH,
     SALDO_ALTO_IMPACTO_MIN,
+    SALDO_ALTO_IMPACTO_MENSUAL_MIN,
 )
 
 
@@ -467,6 +468,7 @@ class CarteraPipeline:
         col_tomador = find_column_name(df_actual, "Nombre Tomador", ["Tomador", "Nombre Cliente", "Cliente"])
         col_solucion = find_column_name(df_actual, "Solución", ["Solucion", "Ramo", "Plan", "Producto"])
         col_resp_cobro = find_column_name(df_actual, "Resp.Cobro", ["Resp Cobro", "Respuesta Cobro", "Motivo Rechazo", "Detalle Rechazo"])
+        col_periodicidad = find_column_name(df_actual, "Perioricidad", ["Periodicidad", "Periodo", "Frecuencia", "Frecuencia Pago", "Forma de pago"])
 
         # Valores auxiliares para lógica
         operacion_series = df_actual[col_operacion].astype(str).str.strip().str.lower() if col_operacion in df_actual.columns else pd.Series([""] * len(df_actual))
@@ -560,24 +562,28 @@ class CarteraPipeline:
 
         # =========================================================================
         # PASO 4: Clientes de Alto Impacto (Urgentes)
-        # REGLA ESTRICTA: Solo clientes con Dias Cartera > 1 (no negativos ni 0 ni 1)
-        # Extraer hacia df_alto_impacto si cumple morosidad positiva (>1) Y cualquiera:
+        # REGLA ESTRICTA: Solo pólizas con Dias Cartera positivos (> 0).
+        # Extraer hacia df_alto_impacto si cumple mora > 0 Y cualquiera de las siguientes:
         # a) Nº ident.fis.1 cruza positivamente con clientes_elite.csv
         # b) Saldo a pagar > 3,000,000
         # c) Dias Cartera >= 45
+        # d) Periodicidad mensual Y Saldo a pagar > 1,000,000
         # =========================================================================
         elite_set = self.elite_manager.load_elite_set()
 
         base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
         base_saldo = parse_numeric(df_base[col_saldo]) if col_saldo in df_base.columns else pd.Series([0.0] * len(df_base), index=df_base.index)
+        base_periodicidad = df_base[col_periodicidad].astype(str).str.strip().str.lower() if col_periodicidad in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
         base_clean_id = df_base["_clean_id"]
 
-        cond_mora_positiva = base_dias_cartera > 1
+        cond_mora_positiva = base_dias_cartera > 0
         cond_elite = base_clean_id.isin(elite_set)
         cond_saldo = base_saldo > SALDO_ALTO_IMPACTO_MIN
         cond_dias = base_dias_cartera >= DIAS_CARTERA_ALTO_IMPACTO_MIN
+        cond_mensual = base_periodicidad.str.contains("mensua", na=False)
+        cond_mensual_saldo = cond_mensual & (base_saldo > SALDO_ALTO_IMPACTO_MENSUAL_MIN)
 
-        mask_alto_impacto = cond_mora_positiva & (cond_elite | cond_saldo | cond_dias)
+        mask_alto_impacto = cond_mora_positiva & (cond_elite | cond_saldo | cond_dias | cond_mensual_saldo)
 
         df_alto_impacto = df_base[mask_alto_impacto].copy()
         # Retirar de df_base
@@ -592,6 +598,8 @@ class CarteraPipeline:
                 motivos.append("Saldo > $3.000.000")
             if cond_dias.loc[idx]:
                 motivos.append("Mora >= 45 días")
+            if cond_mensual_saldo.loc[idx]:
+                motivos.append("Mensual con saldo > $1.000.000")
             return " + ".join(motivos)
 
         if not df_alto_impacto.empty:
