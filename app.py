@@ -261,6 +261,61 @@ def modal_gestion_elite():
 
 
 # ==============================================================================
+# MODAL DISCRETO: CONSULTA DE CLIENTES A NO CONTACTAR (DESDE GOOGLE SHEETS)
+# ==============================================================================
+@st.dialog("🚫 Clientes a No Contactar (Google Sheets)", width="large")
+def modal_no_contactar():
+    st.caption(
+        "Listado oficial de clientes que han solicitado no ser contactados o poseen restricciones operativas. "
+        "Esta lista se sincroniza automáticamente desde Google Sheets y no se edita en la app para mantener la integridad centralizada."
+    )
+
+    with st.spinner("Consultando lista en Google Sheets..."):
+        df_nc, fuente_nc, estado_nc = no_contactar_service.fetch_dataframe()
+
+    c_m1, c_m2, c_m3 = st.columns([1, 1.5, 1.4])
+    with c_m1:
+        st.metric("Total Excluidos", f"{len(df_nc):,}")
+    with c_m2:
+        st.metric("Origen de Datos", fuente_nc)
+    with c_m3:
+        st.markdown("<div style='height: 18px;'></div>", unsafe_allow_html=True)
+        st.link_button(
+            "🔗 Abrir y Editar en Sheets",
+            no_contactar_service.view_url,
+            type="primary",
+            use_container_width=True,
+            help="Abre la hoja de cálculo en una nueva pestaña para agregar, editar o retirar documentos.",
+        )
+
+    if estado_nc != "OK":
+        st.warning(f"⚠️ **Estado de sincronización:** {estado_nc}")
+    else:
+        st.success("🟢 **Sincronización en vivo activa:** Todo cambio realizado en el Google Sheet se aplicará automáticamente.")
+
+    st.markdown("##### 📋 Listado Actual de Exclusiones (Solo Lectura)")
+    if not df_nc.empty:
+        col_configs = {
+            "Nº ident.fis.1": st.column_config.TextColumn("Cédula / NIT"),
+        }
+        for c in df_nc.columns:
+            if c != "Nº ident.fis.1":
+                col_configs[c] = st.column_config.TextColumn(c)
+
+        st.dataframe(
+            df_nc,
+            use_container_width=True,
+            hide_index=True,
+            column_config=col_configs,
+        )
+    else:
+        st.info("No se encontraron registros de clientes a no contactar.")
+
+    if st.button("🔄 Recargar datos desde Google Sheets", key="btn_refresh_sheets_modal", use_container_width=True):
+        st.rerun()
+
+
+# ==============================================================================
 # SIDEBAR MINIMALISTA (SIN DISTRACTORES PARA EL OPERADOR)
 # ==============================================================================
 with st.sidebar:
@@ -274,13 +329,14 @@ with st.sidebar:
     st.caption("Sistema de depuración de cartera semanal integrado con Seguros SURA.")
     
     total_elite_count = elite_manager.count()
+    total_nc_count = no_contactar_service.count()
     st.markdown(
         f"""
         <div style="font-size: 13px; color: #475569; margin-bottom: 8px;">
             👑 <strong>Clientes Élite:</strong> {total_elite_count:,} registrados
         </div>
         <div style="font-size: 13px; color: #475569;">
-            🌐 <strong>Lista No Contactar:</strong> Sincronización directa vía Google Sheets
+            🚫 <strong>No Contactar:</strong> {total_nc_count:,} sincronizados (Google Sheets)
         </div>
         """,
         unsafe_allow_html=True
@@ -292,7 +348,7 @@ with st.sidebar:
 # ==============================================================================
 # ENCABEZADO PRINCIPAL (LOOK & FEEL GUIABIEN.COM)
 # ==============================================================================
-col_head_1, col_head_2 = st.columns([4.2, 1.2])
+col_head_1, col_head_2, col_head_3 = st.columns([3.4, 1.3, 1.3])
 with col_head_1:
     st.markdown(
         f"""
@@ -319,6 +375,16 @@ with col_head_2:
         use_container_width=True,
     ):
         modal_gestion_elite()
+
+with col_head_3:
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+    if st.button(
+        f"🚫 No Contactar ({no_contactar_service.count()})",
+        key="btn_open_no_contactar_modal",
+        help="Ver listado oficial de clientes excluidos de contacto sincronizado desde Google Sheets",
+        use_container_width=True,
+    ):
+        modal_no_contactar()
 
 st.markdown(
     """

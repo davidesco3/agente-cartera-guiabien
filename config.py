@@ -14,6 +14,9 @@ LOGO_PATH = ASSETS_DIR / "logo_guiabien.png"
 GOOGLE_SHEETS_NO_CONTACTAR_URL = (
     "https://docs.google.com/spreadsheets/d/1-kC0V0X9dGIq-8xR7-gJ6CASuN-BBxaVAcmizS-5CtI/export?format=csv&gid=195218118"
 )
+GOOGLE_SHEETS_NO_CONTACTAR_VIEW_URL = (
+    "https://docs.google.com/spreadsheets/d/1-kC0V0X9dGIq-8xR7-gJ6CASuN-BBxaVAcmizS-5CtI/edit#gid=195218118"
+)
 
 # Business Rule Parameters
 DIAS_CARTERA_PREMATURO_MAX = 16

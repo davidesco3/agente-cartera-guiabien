@@ -12,6 +12,7 @@ from config import (
     DIAS_CARTERA_ALTO_IMPACTO_MIN,
     DIAS_CARTERA_PREMATURO_MAX,
     GOOGLE_SHEETS_NO_CONTACTAR_URL,
+    GOOGLE_SHEETS_NO_CONTACTAR_VIEW_URL,
     MENSAJE_DEBITO_FALLIDO_TEMPLATE,
     NO_CONTACTAR_CACHE_PATH,
     SALDO_ALTO_IMPACTO_MIN,
@@ -291,8 +292,14 @@ class ClientesEliteManager:
 class NoContactarService:
     """Gestiona la obtención de clientes en lista de No Contactar directamente desde Google Sheets."""
 
-    def __init__(self, url: str = GOOGLE_SHEETS_NO_CONTACTAR_URL, cache_path: Path = NO_CONTACTAR_CACHE_PATH):
+    def __init__(
+        self,
+        url: str = GOOGLE_SHEETS_NO_CONTACTAR_URL,
+        view_url: str = GOOGLE_SHEETS_NO_CONTACTAR_VIEW_URL,
+        cache_path: Path = NO_CONTACTAR_CACHE_PATH,
+    ):
         self.url = url
+        self.view_url = view_url
         self.cache_path = Path(cache_path)
         self.ensure_default_file()
 
@@ -300,14 +307,14 @@ class NoContactarService:
         """Asegura que el archivo de caché local exista."""
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.cache_path.exists():
-            df_default = pd.DataFrame({"Nº ident.fis.1": []})
+            df_default = pd.DataFrame(columns=["Nº ident.fis.1", "Motivo"])
             df_default.to_csv(self.cache_path, index=False, encoding="utf-8")
 
     def count(self) -> int:
         """Devuelve el total de clientes a no contactar registrados en la caché local."""
         self.ensure_default_file()
         try:
-            df = pd.read_csv(self.cache_path, dtype=str)
+            df = pd.read_csv(self.cache_path, dtype=str).fillna("")
             col = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula"])
             series = df[col] if col in df.columns else df.iloc[:, 0]
             ids = {clean_id_value(v) for v in series if clean_id_value(v)}
@@ -315,10 +322,11 @@ class NoContactarService:
         except Exception:
             return 0
 
-    def fetch_no_contactar(self) -> Tuple[Set[str], str, str]:
+    def fetch_dataframe(self) -> Tuple[pd.DataFrame, str, str]:
         """
-        Obtiene la lista de identificaciones a no contactar directamente desde Google Sheets vía CSV export.
-        Retorna: (set_de_ids, fuente_utilizada, estado_o_advertencia)
+        Obtiene la tabla completa de No Contactar directamente desde Google Sheets.
+        Si la conexión falla o el acceso es restringido, recurre a la caché local.
+        Retorna: (df, fuente, mensaje_estado)
         """
         warning_msg = ""
         # 1. Intentar consultar Google Sheets en vivo
@@ -330,45 +338,72 @@ class NoContactarService:
                 self.url,
                 timeout=8,
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                verify=False
+                verify=False,
             )
             content_type = resp.headers.get("Content-Type", "").lower()
             is_html = "text/html" in content_type or "<!doctype html" in resp.text[:200].lower()
 
             if resp.status_code == 200 and not is_html:
-                df_sheet = pd.read_csv(io.StringIO(resp.text), dtype=str)
-                series = df_sheet.iloc[:, 0]
-                ids = {clean_id_value(v) for v in series if clean_id_value(v)}
-                # Actualizar respaldo local silenciosamente
+                df_sheet = pd.read_csv(io.StringIO(resp.text), dtype=str).fillna("")
+                col_id = find_column_name(df_sheet, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula", "DNI"])
+                if col_id in df_sheet.columns and col_id != "Nº ident.fis.1":
+                    df_sheet.rename(columns={col_id: "Nº ident.fis.1"}, inplace=True)
+                elif "Nº ident.fis.1" not in df_sheet.columns and not df_sheet.empty:
+                    df_sheet.rename(columns={df_sheet.columns[0]: "Nº ident.fis.1"}, inplace=True)
+
+                # Limpiar identificaciones y descartar vacíos
+                df_sheet["Nº ident.fis.1"] = df_sheet["Nº ident.fis.1"].apply(clean_id_value)
+                df_sheet = df_sheet[df_sheet["Nº ident.fis.1"] != ""]
+                df_sheet.drop_duplicates(subset=["Nº ident.fis.1"], inplace=True)
+
+                # Respaldar en caché local
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-                pd.DataFrame({"Nº ident.fis.1": list(ids)}).to_csv(self.cache_path, index=False, encoding="utf-8")
-                return ids, "Google Sheets (Sincronización en vivo)", "OK"
+                df_sheet.to_csv(self.cache_path, index=False, encoding="utf-8")
+
+                return df_sheet, "Google Sheets (Sincronización en vivo)", "OK"
+
             elif resp.status_code == 401 or is_html:
                 warning_msg = (
-                    "El Google Sheets está configurado como privado en Drive (Error 401). "
-                    "Para sincronización directa sin login, debe configurarse como 'Cualquier persona con el enlace' (Lector)."
+                    "El archivo de Google Sheets está en modo 'Restringido' en Google Drive (HTTP 401). "
+                    "Para sincronización directa sin pedir cuenta de Google, cámbialo a 'Cualquier persona con el enlace' (Lector)."
                 )
             else:
-                warning_msg = f"Google Sheets respondió con estado {resp.status_code}."
+                warning_msg = f"Google Sheets respondió con código de estado HTTP {resp.status_code}."
         except Exception as e:
             warning_msg = f"No se pudo conectar a Google Sheets ({type(e).__name__})."
 
-        # 2. Respaldo silencioso si Google Sheets está restringido o sin conexión
+        # 2. Respaldo en caché local
         if self.cache_path.exists():
             try:
-                df_cache = pd.read_csv(self.cache_path, dtype=str)
-                series = df_cache.iloc[:, 0]
-                ids = {clean_id_value(v) for v in series if clean_id_value(v)}
-                if ids:
+                df_cache = pd.read_csv(self.cache_path, dtype=str).fillna("")
+                col_id = find_column_name(df_cache, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula"])
+                if col_id in df_cache.columns and col_id != "Nº ident.fis.1":
+                    df_cache.rename(columns={col_id: "Nº ident.fis.1"}, inplace=True)
+                df_cache["Nº ident.fis.1"] = df_cache["Nº ident.fis.1"].apply(clean_id_value)
+                df_cache = df_cache[df_cache["Nº ident.fis.1"] != ""]
+                df_cache.drop_duplicates(subset=["Nº ident.fis.1"], inplace=True)
+
+                if not df_cache.empty:
                     return (
-                        ids,
+                        df_cache,
                         "Caché local de respaldo",
-                        f"{warning_msg} Se usó la última lista sincronizada ({len(ids)} clientes).",
+                        f"{warning_msg} Mostrando los {len(df_cache)} registros de la última copia local.",
                     )
             except Exception:
                 pass
 
-        return set(), "Sin lista", f"{warning_msg} No se pudieron cargar exclusiones."
+        return pd.DataFrame(columns=["Nº ident.fis.1", "Motivo"]), "Sin datos", f"{warning_msg} No se pudieron cargar datos."
+
+    def fetch_no_contactar(self) -> Tuple[Set[str], str, str]:
+        """
+        Obtiene el conjunto de identificaciones a no contactar.
+        Retorna: (set_de_ids, fuente_utilizada, estado_o_advertencia)
+        """
+        df, fuente, estado = self.fetch_dataframe()
+        if not df.empty and "Nº ident.fis.1" in df.columns:
+            ids = set(df["Nº ident.fis.1"].tolist())
+            return ids, fuente, estado
+        return set(), fuente, estado
 
 
 class CarteraPipeline:
