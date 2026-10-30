@@ -29,7 +29,7 @@ st.set_page_config(
     page_title="Depuración de Cartera | GuíaBien Asesores",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 # ==============================================================================
@@ -191,83 +191,101 @@ elite_manager, no_contactar_service, pipeline = get_services()
 
 
 # ==============================================================================
-# SIDEBAR: GESTIÓN DE CLIENTES ÉLITE & CONFIGURACIÓN
+# MODAL DISCRETO: GESTIÓN DE CLIENTES ÉLITE (OCULTO EN BOTÓN DE CONFIGURACIÓN)
+# ==============================================================================
+@st.dialog("👑 Gestión de Clientes Élite", width="large")
+def modal_gestion_elite():
+    st.caption(
+        "Administra la lista oficial de clientes élite de GuíaBien. "
+        "Puedes modificar la tabla en vivo, agregar nuevos documentos o dar de baja registros."
+    )
+    df_elite = elite_manager.get_dataframe()
+
+    t_tabla, t_agregar, t_eliminar = st.tabs(["📋 Lista Editable en Vivo", "➕ Agregar Cliente", "🗑️ Eliminar Cliente"])
+
+    with t_tabla:
+        st.info("💡 Haz doble clic en cualquier celda para editar, o usa la última fila vacía para añadir nuevos:")
+        edited_df = st.data_editor(
+            df_elite,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Nº ident.fis.1": st.column_config.TextColumn("Cédula / NIT", required=True),
+                "Nombre Tomador": st.column_config.TextColumn("Nombre Tomador"),
+                "Segmento": st.column_config.TextColumn("Segmento", default="Élite"),
+            },
+            key="editor_elite_modal",
+        )
+        if st.button("💾 Guardar Cambios en la Base", type="primary", use_container_width=True, key="btn_save_table_elite"):
+            success, msg, _ = elite_manager.save_dataframe(edited_df)
+            if success:
+                st.success(f"✅ {msg}")
+                st.rerun()
+            else:
+                st.error(f"❌ {msg}")
+
+    with t_agregar:
+        st.markdown("##### Registrar nuevo cliente al segmento prioritario")
+        c_dni, c_nom = st.columns([1, 2])
+        with c_dni:
+            nuevo_dni = st.text_input("Número de Documento (Cédula/NIT)", key="modal_input_dni")
+        with c_nom:
+            nuevo_nombre = st.text_input("Nombre Completo del Tomador", key="modal_input_nombre")
+
+        if st.button("➕ Guardar Nuevo Cliente", type="primary", key="btn_save_single_elite"):
+            if nuevo_dni.strip():
+                success, msg = elite_manager.add_client(nuevo_dni, nuevo_nombre)
+                if success:
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+            else:
+                st.warning("Por favor ingresa un número de documento válido.")
+
+    with t_eliminar:
+        st.markdown("##### Retirar cliente de la lista de clientes élite")
+        if not df_elite.empty:
+            opciones = [f"{row['Nº ident.fis.1']} - {row['Nombre Tomador']}" for _, row in df_elite.iterrows()]
+            seleccion = st.selectbox("Selecciona el cliente a retirar:", opciones, key="select_del_elite_modal")
+            dni_del = seleccion.split(" - ")[0].strip() if seleccion else ""
+
+            if st.button("🗑️ Eliminar de Clientes Élite", type="secondary", key="btn_confirm_del_elite"):
+                success, msg = elite_manager.remove_client(dni_del)
+                if success:
+                    st.success(f"✅ {msg}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ {msg}")
+        else:
+            st.info("No hay clientes registrados en la lista élite.")
+
+
+# ==============================================================================
+# SIDEBAR MINIMALISTA (SIN DISTRACTORES PARA EL OPERADOR)
 # ==============================================================================
 with st.sidebar:
     if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), width=200)
+        st.image(str(LOGO_PATH), width=180)
     else:
         st.markdown(f"<h3 style='color:{BRAND_PRIMARY}; font-weight:700;'>GuíaBien</h3>", unsafe_allow_html=True)
 
     st.markdown("<hr style='margin: 12px 0;'>", unsafe_allow_html=True)
-
-    st.markdown("### 👑 Gestión de Clientes Élite")
-    total_elite = elite_manager.count()
-
+    st.markdown("#### ℹ️ Estado del Sistema")
+    st.caption("Sistema de depuración de cartera semanal integrado con Seguros SURA.")
+    
+    total_elite_count = elite_manager.count()
     st.markdown(
         f"""
-        <div style="background:#F1F5F9; border-radius:8px; padding:12px; margin-bottom:14px; border:1px solid #CBD5E1;">
-            <div style="font-size:12px; color:#64748B; font-weight:600;">CLIENTES ÉLITE REGISTRADOS</div>
-            <div style="font-size:24px; color:{BRAND_PRIMARY}; font-weight:700;">{total_elite:,}</div>
-            <div style="font-size:11px; color:#475569;">Almacenado localmente en <code>data/clientes_elite.csv</code></div>
+        <div style="font-size: 13px; color: #475569; margin-bottom: 8px;">
+            👑 <strong>Clientes Élite:</strong> {total_elite_count:,} registrados
+        </div>
+        <div style="font-size: 13px; color: #475569;">
+            🌐 <strong>Lista No Contactar:</strong> Sincronización directa vía Google Sheets
         </div>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
-
-    archivo_elite = st.file_uploader(
-        "Actualizar listado de Clientes Élite (.csv o .xlsx)",
-        type=["csv", "xlsx", "xls"],
-        key="uploader_elite",
-        help="Sube un archivo con los números de documento de clientes prioritarios. Se sobreescribirá la base local permanentemente.",
-    )
-
-    if archivo_elite is not None:
-        if st.button("Guardar Nuevos Clientes Élite", key="btn_save_elite"):
-            success, msg, count = elite_manager.update_from_file(archivo_elite)
-            if success:
-                st.success(f"✅ {msg}")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
-
-    st.markdown("<hr style='margin: 18px 0;'>", unsafe_allow_html=True)
-
-    st.markdown("### 🚫 Gestión de Lista No Contactar")
-    total_no_contactar = no_contactar_service.count()
-
-    st.markdown(
-        f"""
-        <div style="background:#FEF2F2; border-radius:8px; padding:12px; margin-bottom:14px; border:1px solid #FECACA;">
-            <div style="font-size:12px; color:#991B1B; font-weight:600;">CLIENTES EXCLUIDOS REGISTRADOS</div>
-            <div style="font-size:24px; color:#DC2626; font-weight:700;">{total_no_contactar:,}</div>
-            <div style="font-size:11px; color:#7F1D1D;">Se resaltarán en <strong>rojo</strong> en todas sus pólizas.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    archivo_no_contactar = st.file_uploader(
-        "Actualizar listado de Clientes No Contactar (.csv o .xlsx)",
-        type=["csv", "xlsx", "xls"],
-        key="uploader_no_contactar_cache",
-        help="Sube un archivo con los números de documento de clientes a excluir. Se guardará permanentemente en la base local.",
-    )
-
-    if archivo_no_contactar is not None:
-        if st.button("Guardar Lista de No Contactar", key="btn_save_nc"):
-            success, msg, count = no_contactar_service.update_from_file(archivo_no_contactar)
-            if success:
-                st.success(f"✅ {msg}")
-                st.rerun()
-            else:
-                st.error(f"❌ {msg}")
-
-    with st.expander("🌐 Sincronización en línea: Google Sheets", expanded=False):
-        st.caption("URL de sincronización en vivo configurada:")
-        st.code(GOOGLE_SHEETS_NO_CONTACTAR_URL, language="text")
-        st.caption("Si el documento en Google Sheets tiene acceso restringido o estás sin internet, la app usa automáticamente la lista local permanente.")
-
     st.markdown("<br>", unsafe_allow_html=True)
     st.caption("GuíaBien Asesores en Seguros S.A.S. — Medellín, Colombia")
 
@@ -275,7 +293,7 @@ with st.sidebar:
 # ==============================================================================
 # ENCABEZADO PRINCIPAL (LOOK & FEEL GUIABIEN.COM)
 # ==============================================================================
-col_head_1, col_head_2 = st.columns([4, 1])
+col_head_1, col_head_2 = st.columns([4.2, 1.2])
 with col_head_1:
     st.markdown(
         f"""
@@ -285,13 +303,23 @@ with col_head_1:
                 <div class="gb-header-subtitle">GuíaBien Asesores en Seguros | Intermediario SURA</div>
             </div>
             <div style="text-align: right; font-size: 13px; opacity: 0.9;">
-                <div><strong>Ambiente Interno</strong></div>
-                <div>Versión 2.1 con Blindaje Antierrores</div>
+                <div><strong>Ambiente Operativo</strong></div>
+                <div>Versión 2.2 Productiva</div>
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+with col_head_2:
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+    if st.button(
+        f"⚙️ Clientes Élite ({elite_manager.count()})",
+        key="btn_open_elite_modal",
+        help="Abrir panel administrativo discreto para agregar o eliminar clientes élite",
+        use_container_width=True,
+    ):
+        modal_gestion_elite()
 
 st.markdown(
     """
@@ -489,13 +517,11 @@ if btn_procesar:
             df_ant = read_uploaded_file(file_anterior) if file_anterior is not None else pd.DataFrame(columns=df_act.columns)
             df_rec = read_uploaded_file(file_recaudos) if file_recaudos is not None else pd.DataFrame(columns=["Póliza", "Nº ident.fis.1"])
 
-            # 2. Ejecutar Pipeline
-            manual_nc = st.session_state.get("manual_no_contact_file", None)
+            # 2. Ejecutar Pipeline (sincroniza automáticamente la lista No Contactar desde Google Sheets)
             resultados = pipeline.process(
                 df_cartera_actual_raw=df_act,
                 df_cartera_anterior_raw=df_ant,
                 df_recaudos_raw=df_rec,
-                manual_no_contactar_file=manual_nc,
             )
 
             st.session_state["resultados_cartera"] = resultados
@@ -519,11 +545,9 @@ if "resultados_cartera" in st.session_state:
 
     # Alerta sobre la fuente de No Contactar
     if "Google Sheets" in nc_info["fuente"]:
-        st.success(f"🌐 **Lista No Contactar:** Sincronizada en vivo desde Google Sheets ({nc_info['total_excluidos']} registros excluidos).")
-    elif "Caché local" in nc_info["fuente"]:
-        st.warning(f"⚠️ **Lista No Contactar:** {nc_info['estado']}")
+        st.success(f"🌐 **Lista No Contactar:** Sincronizada directamente en vivo desde Google Sheets ({nc_info['total_excluidos']} clientes excluidos).")
     else:
-        st.info(f"ℹ️ **Lista No Contactar:** {nc_info['estado']}")
+        st.warning(f"⚠️ **Lista No Contactar:** {nc_info['estado']}")
 
     # Cuadrícula de Métricas
     m_col1, m_col2, m_col3, m_col4, m_col5, m_col6 = st.columns(6)

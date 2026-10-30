@@ -176,8 +176,80 @@ class ClientesEliteManager:
         """Asegura que el archivo y su directorio existan."""
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.file_path.exists():
-            df_default = pd.DataFrame({"Nº ident.fis.1": []})
+            df_default = pd.DataFrame(columns=["Nº ident.fis.1", "Nombre Tomador", "Segmento"])
             df_default.to_csv(self.file_path, index=False, encoding="utf-8")
+
+    def get_dataframe(self) -> pd.DataFrame:
+        """Carga el DataFrame de clientes élite para edición interactiva."""
+        self.ensure_default_file()
+        try:
+            df = pd.read_csv(self.file_path, dtype=str).fillna("")
+            col_id = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula", "DNI", "DNI Tomador"])
+            if col_id != "Nº ident.fis.1" and col_id in df.columns:
+                df.rename(columns={col_id: "Nº ident.fis.1"}, inplace=True)
+            if "Nº ident.fis.1" not in df.columns:
+                df["Nº ident.fis.1"] = ""
+            if "Nombre Tomador" not in df.columns:
+                df["Nombre Tomador"] = ""
+            if "Segmento" not in df.columns:
+                df["Segmento"] = "Élite"
+            return df[["Nº ident.fis.1", "Nombre Tomador", "Segmento"]]
+        except Exception:
+            return pd.DataFrame(columns=["Nº ident.fis.1", "Nombre Tomador", "Segmento"])
+
+    def save_dataframe(self, df: pd.DataFrame) -> Tuple[bool, str, int]:
+        """Guarda un DataFrame directamente en clientes_elite.csv, normalizando cédulas."""
+        try:
+            df_to_save = df.copy()
+            col_id = "Nº ident.fis.1" if "Nº ident.fis.1" in df_to_save.columns else df_to_save.columns[0]
+            # Descartar filas donde la identificación esté en blanco
+            df_to_save = df_to_save[df_to_save[col_id].astype(str).str.strip() != ""]
+            # Limpiar documento
+            df_to_save[col_id] = df_to_save[col_id].apply(clean_id_value)
+            # Eliminar duplicados
+            df_to_save.drop_duplicates(subset=[col_id], inplace=True)
+
+            if "Nombre Tomador" not in df_to_save.columns:
+                df_to_save["Nombre Tomador"] = ""
+            if "Segmento" not in df_to_save.columns:
+                df_to_save["Segmento"] = "Élite"
+            else:
+                df_to_save["Segmento"] = df_to_save["Segmento"].replace("", "Élite").fillna("Élite")
+
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            df_to_save.to_csv(self.file_path, index=False, encoding="utf-8")
+            return True, f"Listado guardado exitosamente con {len(df_to_save)} clientes élite.", len(df_to_save)
+        except Exception as e:
+            return False, f"Error al guardar clientes élite: {str(e)}", 0
+
+    def add_client(self, dni: str, nombre: str = "", segmento: str = "Élite") -> Tuple[bool, str]:
+        """Añade un cliente individual a la lista permanente."""
+        clean_dni = clean_id_value(dni)
+        if not clean_dni:
+            return False, "La identificación suministrada no es válida."
+        df = self.get_dataframe()
+        if clean_dni in set(df["Nº ident.fis.1"].apply(clean_id_value)):
+            return False, f"El documento {clean_dni} ya se encuentra registrado como cliente élite."
+        
+        new_row = pd.DataFrame([{
+            "Nº ident.fis.1": clean_dni,
+            "Nombre Tomador": nombre.strip().upper(),
+            "Segmento": segmento.strip() or "Élite"
+        }])
+        df_updated = pd.concat([df, new_row], ignore_index=True)
+        success, msg, _ = self.save_dataframe(df_updated)
+        return success, f"Cliente {clean_dni} ({nombre}) agregado exitosamente." if success else msg
+
+    def remove_client(self, dni: str) -> Tuple[bool, str]:
+        """Elimina un cliente de la lista permanente por su identificación."""
+        clean_dni = clean_id_value(dni)
+        df = self.get_dataframe()
+        before_count = len(df)
+        df_filtered = df[df["Nº ident.fis.1"].apply(clean_id_value) != clean_dni]
+        if len(df_filtered) == before_count:
+            return False, f"No se encontró ningún cliente con la identificación {clean_dni}."
+        success, msg, _ = self.save_dataframe(df_filtered)
+        return success, f"Cliente {clean_dni} eliminado de clientes élite." if success else msg
 
     def load_elite_set(self) -> Set[str]:
         """Carga el conjunto de documentos élite como strings limpios."""
@@ -187,7 +259,6 @@ class ClientesEliteManager:
             col_id = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula"])
             if col_id in df.columns:
                 return {clean_id_value(v) for v in df[col_id] if clean_id_value(v)}
-            # Si no encuentra el nombre exacto, tomar la primera columna
             if not df.empty:
                 return {clean_id_value(v) for v in df.iloc[:, 0] if clean_id_value(v)}
             return set()
@@ -203,10 +274,7 @@ class ClientesEliteManager:
         try:
             df = read_uploaded_file(uploaded_file)
             col_id = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula", "Numero"])
-            if col_id in df.columns:
-                series_id = df[col_id]
-            else:
-                series_id = df.iloc[:, 0]
+            series_id = df[col_id] if col_id in df.columns else df.iloc[:, 0]
 
             cleaned_ids = [clean_id_value(x) for x in series_id if clean_id_value(x)]
             unique_ids = sorted(list(set(cleaned_ids)))
@@ -214,17 +282,14 @@ class ClientesEliteManager:
             if not unique_ids:
                 return False, "No se encontraron identificaciones válidas en el archivo.", 0
 
-            df_to_save = pd.DataFrame({"Nº ident.fis.1": unique_ids})
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            df_to_save.to_csv(self.file_path, index=False, encoding="utf-8")
-
-            return True, f"Se actualizaron exitosamente {len(unique_ids)} clientes élite.", len(unique_ids)
+            df_to_save = pd.DataFrame({"Nº ident.fis.1": unique_ids, "Nombre Tomador": "", "Segmento": "Élite"})
+            return self.save_dataframe(df_to_save)
         except Exception as e:
             return False, f"Error al procesar el archivo de clientes élite: {str(e)}", 0
 
 
 class NoContactarService:
-    """Gestiona la obtención de clientes en lista de No Contactar desde Google Sheets o fallback local."""
+    """Gestiona la obtención de clientes en lista de No Contactar directamente desde Google Sheets."""
 
     def __init__(self, url: str = GOOGLE_SHEETS_NO_CONTACTAR_URL, cache_path: Path = NO_CONTACTAR_CACHE_PATH):
         self.url = url
@@ -250,52 +315,23 @@ class NoContactarService:
         except Exception:
             return 0
 
-    def update_from_file(self, uploaded_file) -> Tuple[bool, str, int]:
-        """Actualiza permanentemente el listado de clientes a no contactar desde un archivo."""
-        try:
-            df = read_uploaded_file(uploaded_file)
-            col_id = find_column_name(df, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion", "Cedula", "Numero"])
-            series_id = df[col_id] if col_id in df.columns else df.iloc[:, 0]
-
-            cleaned_ids = [clean_id_value(x) for x in series_id if clean_id_value(x)]
-            unique_ids = sorted(list(set(cleaned_ids)))
-
-            if not unique_ids:
-                return False, "No se encontraron identificaciones válidas en el archivo.", 0
-
-            df_to_save = pd.DataFrame({"Nº ident.fis.1": unique_ids})
-            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-            df_to_save.to_csv(self.cache_path, index=False, encoding="utf-8")
-
-            return True, f"Se actualizaron exitosamente {len(unique_ids)} clientes en la lista de No Contactar.", len(unique_ids)
-        except Exception as e:
-            return False, f"Error al procesar el archivo de no contactar: {str(e)}", 0
-
-    def fetch_no_contactar(self, manual_file=None) -> Tuple[Set[str], str, str]:
+    def fetch_no_contactar(self) -> Tuple[Set[str], str, str]:
         """
-        Obtiene la lista de identificaciones a no contactar.
+        Obtiene la lista de identificaciones a no contactar directamente desde Google Sheets vía CSV export.
         Retorna: (set_de_ids, fuente_utilizada, estado_o_advertencia)
         """
-        # 1. Si el usuario suministró un archivo manual de reemplazo en la sesión
-        if manual_file is not None:
-            try:
-                df_manual = read_uploaded_file(manual_file)
-                col = find_column_name(df_manual, "Nº ident.fis.1", ["Documento", "NIT", "Identificacion"])
-                series = df_manual[col] if col in df_manual.columns else df_manual.iloc[:, 0]
-                ids = {clean_id_value(v) for v in series if clean_id_value(v)}
-                # Actualizar caché permanente
-                self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-                pd.DataFrame({"Nº ident.fis.1": list(ids)}).to_csv(self.cache_path, index=False, encoding="utf-8")
-                return ids, "Archivo cargado en sesión", "OK"
-            except Exception:
-                pass
-
-        # 2. Intentar consultar Google Sheets en línea (usando verify=False para tolerar certificados locales de Windows)
+        warning_msg = ""
+        # 1. Intentar consultar Google Sheets en vivo
         try:
             import urllib3
             urllib3.disable_warnings()
 
-            resp = requests.get(self.url, timeout=7, headers={"User-Agent": "GuiaBienCarteraApp/1.0"}, verify=False)
+            resp = requests.get(
+                self.url,
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                verify=False
+            )
             content_type = resp.headers.get("Content-Type", "").lower()
             is_html = "text/html" in content_type or "<!doctype html" in resp.text[:200].lower()
 
@@ -303,19 +339,21 @@ class NoContactarService:
                 df_sheet = pd.read_csv(io.StringIO(resp.text), dtype=str)
                 series = df_sheet.iloc[:, 0]
                 ids = {clean_id_value(v) for v in series if clean_id_value(v)}
-                # Actualizar caché permanente
+                # Actualizar respaldo local silenciosamente
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
                 pd.DataFrame({"Nº ident.fis.1": list(ids)}).to_csv(self.cache_path, index=False, encoding="utf-8")
                 return ids, "Google Sheets (Sincronización en vivo)", "OK"
-            else:
+            elif resp.status_code == 401 or is_html:
                 warning_msg = (
-                    "El enlace de Google Sheets es privado (requiere login o devolvió código "
-                    f"{resp.status_code})."
+                    "El Google Sheets está configurado como privado en Drive (Error 401). "
+                    "Para sincronización directa sin login, debe configurarse como 'Cualquier persona con el enlace' (Lector)."
                 )
+            else:
+                warning_msg = f"Google Sheets respondió con estado {resp.status_code}."
         except Exception as e:
             warning_msg = f"No se pudo conectar a Google Sheets ({type(e).__name__})."
 
-        # 3. Fallback a caché local persistente
+        # 2. Respaldo silencioso si Google Sheets está restringido o sin conexión
         if self.cache_path.exists():
             try:
                 df_cache = pd.read_csv(self.cache_path, dtype=str)
@@ -324,13 +362,13 @@ class NoContactarService:
                 if ids:
                     return (
                         ids,
-                        "Caché local persistente (Respaldo)",
-                        f"{warning_msg} Se utilizó la lista almacenada ({len(ids)} clientes).",
+                        "Caché local de respaldo",
+                        f"{warning_msg} Se usó la última lista sincronizada ({len(ids)} clientes).",
                     )
             except Exception:
                 pass
 
-        return set(), "Sin lista", f"{warning_msg} No se aplicaron exclusiones de no contactar."
+        return set(), "Sin lista", f"{warning_msg} No se pudieron cargar exclusiones."
 
 
 class CarteraPipeline:
@@ -529,12 +567,11 @@ class CarteraPipeline:
 
         # =========================================================================
         # PASO 6: Validación de No Contactar (Google Sheets)
+        # Sincronización directa desde Google Sheets
         # Cruzar lista de excluidos con Nº ident.fis.1 de TODOS los DataFrames
         # Añadir columna 'Estado_Contacto' = 'No contactar' si cruza positivamente
         # =========================================================================
-        no_contactar_set, fuente_no_contactar, status_no_contactar = self.no_contactar_service.fetch_no_contactar(
-            manual_file=manual_no_contactar_file
-        )
+        no_contactar_set, fuente_no_contactar, status_no_contactar = self.no_contactar_service.fetch_no_contactar()
 
         all_dfs = {
             "base": df_base,
