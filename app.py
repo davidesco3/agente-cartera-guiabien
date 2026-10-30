@@ -179,7 +179,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # ==============================================================================
 # INICIALIZACIÓN DE SERVICIOS
 # ==============================================================================
-@st.cache_resource
 def get_services():
     elite_mgr = ClientesEliteManager(CLIENTES_ELITE_PATH)
     no_contactar_srv = NoContactarService(GOOGLE_SHEETS_NO_CONTACTAR_URL)
