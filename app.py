@@ -12,8 +12,11 @@ from config import (
     CLIENTES_ELITE_PATH,
     LOGO_PATH,
     GOOGLE_SHEETS_NO_CONTACTAR_URL,
+    GOOGLE_SHEETS_ASESORES_URL,
+    GOOGLE_SHEETS_ASESORES_VIEW_URL,
 )
 from cartera_processor import (
+    AsesoresService,
     CarteraPipeline,
     ClientesEliteManager,
     NoContactarService,
@@ -182,11 +185,12 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 def get_services():
     elite_mgr = ClientesEliteManager(CLIENTES_ELITE_PATH)
     no_contactar_srv = NoContactarService(GOOGLE_SHEETS_NO_CONTACTAR_URL)
-    pipeline = CarteraPipeline(elite_mgr, no_contactar_srv)
-    return elite_mgr, no_contactar_srv, pipeline
+    asesores_srv = AsesoresService(GOOGLE_SHEETS_ASESORES_URL, GOOGLE_SHEETS_ASESORES_VIEW_URL)
+    pipeline = CarteraPipeline(elite_mgr, no_contactar_srv, asesores_srv)
+    return elite_mgr, no_contactar_srv, asesores_srv, pipeline
 
 
-elite_manager, no_contactar_service, pipeline = get_services()
+elite_manager, no_contactar_service, asesores_service, pipeline = get_services()
 
 
 # ==============================================================================
@@ -342,8 +346,11 @@ with st.sidebar:
         <div style="font-size: 13px; color: #475569; margin-bottom: 8px;">
             👑 <strong>Clientes Élite:</strong> {total_elite_count:,} registrados
         </div>
-        <div style="font-size: 13px; color: #475569;">
+        <div style="font-size: 13px; color: #475569; margin-bottom: 8px;">
             🚫 <strong>No Contactar:</strong> {total_nc_count:,} sincronizados (Google Sheets)
+        </div>
+        <div style="font-size: 13px; color: #475569;">
+            👥 <strong>Asesores por Póliza:</strong> Sincronización en vivo (Google Sheets)
         </div>
         """,
         unsafe_allow_html=True
@@ -705,12 +712,14 @@ if "resultados_cartera" in st.session_state:
     # SECCIÓN 5: DESCARGA DEL EXCEL FORMATEADO
     # ==============================================================================
     st.markdown("### 📥 Descarga de Archivo Depurado")
-    excel_bytes = export_cartera_to_excel(dfs)
+    resumen_com = res.get("resumen_comerciales", pd.DataFrame())
+    dfs_com = res.get("dfs_comerciales", {})
+    excel_bytes = export_cartera_to_excel(dfs, resumen_comerciales=resumen_com, dfs_comerciales=dfs_com)
 
     col_btn_1, col_btn_2 = st.columns([2, 1])
     with col_btn_1:
         st.download_button(
-            label="📊 Descargar Cartera Depurada (.xlsx con Formato Condicional)",
+            label="📊 Descargar Cartera Depurada (.xlsx con Resumen y Hojas por Comercial)",
             data=excel_bytes,
             file_name="Cartera_Depurada_GuiaBien.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -720,8 +729,7 @@ if "resultados_cartera" in st.session_state:
         st.markdown(
             """
             <div style="font-size:12px; color:#475569; padding-top:6px;">
-                Incluye 5 hojas independientes y <strong>resaltado rojo automático</strong>
-                (#FFC7CE) en cualquier fila marcada con <code>No contactar</code>.
+                Incluye hoja <strong>Resumen Comerciales</strong>, hojas independientes de Alto Impacto por comercial (<code>AI - Comercial</code>) y resaltado condicional (#FFC7CE) en <code>No contactar</code>.
             </div>
             """,
             unsafe_allow_html=True,
@@ -735,19 +743,50 @@ if "resultados_cartera" in st.session_state:
     st.markdown("### 🔍 Explorador Interactivo de Hojas")
 
     tabs = st.tabs([
-        f"Base depurada ({len(dfs['Base depurada'])})",
+        f"👥 Resumen Comerciales ({len(resumen_com)})",
         f"Alto impacto ({len(dfs['Alto impacto'])})",
+        f"Base depurada ({len(dfs['Base depurada'])})",
         f"Débitos fallidos ({len(dfs['Débitos fallidos'])})",
         f"Devoluciones ({len(dfs['Devoluciones'])})",
         f"Revisar cancelación ({len(dfs['Revisar cancelación'])})",
     ])
 
-    # 1. Base Depurada
+    # 0. Resumen Comerciales
     with tabs[0]:
-        st.caption("Registros estándar de cobro listos para asignación y gestión habitual.")
-        st.dataframe(dfs["Base depurada"], use_container_width=True, height=350)
+        st.caption("Visión consolidada de cartera por comercial con métricas clave y recomendaciones de cobro orientadas a la acción.")
+        if not resumen_com.empty:
+            st.dataframe(
+                resumen_com,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Comercial": st.column_config.TextColumn("Asesor / Comercial"),
+                    "Total Cartera ($)": st.column_config.NumberColumn("Total Cartera", format="$ %,.0f"),
+                    "Pólizas en Mora": st.column_config.NumberColumn("Pólizas"),
+                    "Casos Alto Impacto": st.column_config.NumberColumn("Casos Alto Impacto"),
+                    "Saldo Alto Impacto ($)": st.column_config.NumberColumn("Saldo Alto Impacto", format="$ %,.0f"),
+                    "Débitos Fallidos": st.column_config.NumberColumn("Débitos Fallidos"),
+                    "Días Mora Promedio": st.column_config.NumberColumn("Mora Promedio", format="%.1f d"),
+                    "% Cartera": st.column_config.NumberColumn("% Cartera", format="%.1f %%"),
+                    "Foco de Acción Sugerido": st.column_config.TextColumn("Foco de Acción para Cobro"),
+                },
+            )
 
-    # 2. Alto Impacto
+            if dfs_com:
+                st.markdown("##### 🎯 Explorar Casos de Alto Impacto por Comercial")
+                opciones_com = list(dfs_com.keys())
+                sel_hoja_com = st.selectbox(
+                    "Selecciona un comercial para ver sus pólizas prioritarias:",
+                    opciones_com,
+                    key="sel_comercial_ai",
+                )
+                if sel_hoja_com and sel_hoja_com in dfs_com:
+                    df_sub = dfs_com[sel_hoja_com]
+                    st.dataframe(df_sub, use_container_width=True, height=280)
+        else:
+            st.info("No se generó resumen de comerciales.")
+
+    # 1. Alto Impacto
     with tabs[1]:
         st.caption("Pólizas con alta prioridad comercial o riesgo financiero. Solo incluye registros con días de cartera estrictamente positivos (> 0): Clientes Élite, saldo > $3M, mora ≥ 45 días o periodicidad mensual con saldo > $1M.")
         df_ai = dfs["Alto impacto"]
@@ -780,8 +819,13 @@ if "resultados_cartera" in st.session_state:
                         st.markdown(f"**{i}. {tomador} (Póliza: {pol})** — *{motivo}*", unsafe_allow_html=True)
                         st.text_area(label=f"Mensaje Alto Impacto #{i}", value=msg, height=75, key=f"msg_ai_txt_{i}")
 
-    # 3. Débitos Fallidos
+    # 2. Base Depurada
     with tabs[2]:
+        st.caption("Registros estándar de cobro listos para asignación y gestión habitual.")
+        st.dataframe(dfs["Base depurada"], use_container_width=True, height=350)
+
+    # 3. Débitos Fallidos
+    with tabs[3]:
         st.caption("Débitos automáticos rechazados con más de 16 días de cartera (excluye débitos exitosos). Incluye mensaje personalizado con el primer nombre.")
         df_deb = dfs["Débitos fallidos"]
         st.dataframe(df_deb, use_container_width=True, height=300)
@@ -800,11 +844,11 @@ if "resultados_cartera" in st.session_state:
                     st.text_area(label=f"Mensaje #{i}", value=msg, height=75, key=f"msg_txt_{i}")
 
     # 4. Devoluciones
-    with tabs[3]:
+    with tabs[4]:
         st.caption("Operaciones de devolución a favor de los tomadores o asegurados.")
         st.dataframe(dfs["Devoluciones"], use_container_width=True, height=350)
 
     # 5. Revisar Cancelación
-    with tabs[4]:
+    with tabs[5]:
         st.caption("Pólizas que aparecían activas en la cartera anterior, pero no figuran en la cartera actual ni en recaudos.")
         st.dataframe(dfs["Revisar cancelación"], use_container_width=True, height=350)

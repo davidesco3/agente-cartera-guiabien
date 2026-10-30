@@ -8,6 +8,7 @@ ASSETS_DIR = BASE_DIR / "assets"
 
 CLIENTES_ELITE_PATH = DATA_DIR / "clientes_elite.csv"
 NO_CONTACTAR_CACHE_PATH = DATA_DIR / "no_contactar_cache.csv"
+ASESORES_CACHE_PATH = DATA_DIR / "asesores_cache.csv"
 LOGO_PATH = ASSETS_DIR / "logo_guiabien.png"
 
 # Remote Integrations (Pestaña Cartera_Excluidos gid=1473054068)
@@ -16,6 +17,14 @@ GOOGLE_SHEETS_NO_CONTACTAR_URL = (
 )
 GOOGLE_SHEETS_NO_CONTACTAR_VIEW_URL = (
     "https://docs.google.com/spreadsheets/d/1-kC0V0X9dGIq-8xR7-gJ6CASuN-BBxaVAcmizS-5CtI/edit#gid=1473054068"
+)
+
+# Remote Integrations (Asesor Principal por Póliza gid=271219694)
+GOOGLE_SHEETS_ASESORES_URL = (
+    "https://docs.google.com/spreadsheets/d/1evfaYjoIN_j5lBujV8SI4rad1L4ArO6cnngnZU3xzG4/export?format=csv&gid=271219694"
+)
+GOOGLE_SHEETS_ASESORES_VIEW_URL = (
+    "https://docs.google.com/spreadsheets/d/1evfaYjoIN_j5lBujV8SI4rad1L4ArO6cnngnZU3xzG4/edit#gid=271219694"
 )
 
 # Business Rule Parameters

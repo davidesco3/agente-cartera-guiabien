@@ -8,9 +8,12 @@ import pandas as pd
 import requests
 
 from config import (
+    ASESORES_CACHE_PATH,
     CLIENTES_ELITE_PATH,
     DIAS_CARTERA_ALTO_IMPACTO_MIN,
     DIAS_CARTERA_PREMATURO_MAX,
+    GOOGLE_SHEETS_ASESORES_URL,
+    GOOGLE_SHEETS_ASESORES_VIEW_URL,
     GOOGLE_SHEETS_NO_CONTACTAR_URL,
     GOOGLE_SHEETS_NO_CONTACTAR_VIEW_URL,
     MENSAJE_DEBITO_FALLIDO_TEMPLATE,
@@ -429,12 +432,121 @@ class NoContactarService:
         return set(), fuente, estado
 
 
+class AsesoresService:
+    """Gestiona el mapeo de Asesor Principal por número de póliza directamente desde Google Sheets."""
+
+    def __init__(
+        self,
+        url: str = GOOGLE_SHEETS_ASESORES_URL,
+        view_url: str = GOOGLE_SHEETS_ASESORES_VIEW_URL,
+        cache_path: Path = ASESORES_CACHE_PATH,
+    ):
+        self.url = url
+        self.view_url = view_url
+        self.cache_path = Path(cache_path)
+        self.ensure_default_file()
+
+    def ensure_default_file(self):
+        """Asegura que el archivo de caché local exista."""
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.cache_path.exists():
+            df_default = pd.DataFrame(columns=["Número de póliza", "Asesor principal"])
+            df_default.to_csv(self.cache_path, index=False, encoding="utf-8")
+
+    def fetch_mapping(self) -> Tuple[Dict[str, str], str, str]:
+        """
+        Obtiene el diccionario de mapeo {poliza_limpia: asesor_principal}.
+        Retorna: (dict_map, fuente, estado)
+        """
+        warning_msg = ""
+        # 1. Intentar consultar Google Sheets en vivo
+        try:
+            import urllib3
+            urllib3.disable_warnings()
+
+            resp = requests.get(
+                self.url,
+                timeout=12,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                verify=False,
+            )
+            content_type = resp.headers.get("Content-Type", "").lower()
+            is_html = "text/html" in content_type or "<!doctype html" in resp.text[:200].lower()
+
+            if resp.status_code == 200 and not is_html:
+                df_sheet = pd.read_csv(io.StringIO(resp.text), dtype=str).fillna("")
+                col_pol = find_column_name(
+                    df_sheet, "Número de póliza", ["Numero de poliza", "Póliza", "Poliza", "No Poliza"]
+                )
+                col_ase = find_column_name(
+                    df_sheet, "Asesor principal", ["Asesor", "Comercial", "Asesor Principal"]
+                )
+
+                if col_pol in df_sheet.columns and col_ase in df_sheet.columns:
+                    # Guardar respaldo
+                    self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                    df_to_cache = df_sheet[[col_pol, col_ase]].copy()
+                    df_to_cache.columns = ["Número de póliza", "Asesor principal"]
+                    df_to_cache.to_csv(self.cache_path, index=False, encoding="utf-8")
+
+                    mapping = self._build_mapping_from_df(df_sheet, col_pol, col_ase)
+                    return mapping, "Google Sheets (Sincronización en vivo)", "OK"
+                else:
+                    warning_msg = f"Columnas no encontradas en Google Sheets ({list(df_sheet.columns[:4])})."
+            else:
+                warning_msg = f"Google Sheets respondió con código HTTP {resp.status_code}."
+        except Exception as e:
+            warning_msg = f"No se pudo conectar a Google Sheets ({type(e).__name__})."
+
+        # 2. Respaldo en caché local
+        if self.cache_path.exists():
+            try:
+                df_cache = pd.read_csv(self.cache_path, dtype=str).fillna("")
+                col_pol = find_column_name(df_cache, "Número de póliza", ["Póliza", "Poliza"])
+                col_ase = find_column_name(df_cache, "Asesor principal", ["Asesor"])
+                if col_pol in df_cache.columns and col_ase in df_cache.columns:
+                    mapping = self._build_mapping_from_df(df_cache, col_pol, col_ase)
+                    return mapping, "Caché local de respaldo", f"{warning_msg} Usando copia local ({len(mapping)} pólizas)."
+            except Exception:
+                pass
+
+        return {}, "Sin datos", f"{warning_msg} No se pudieron cargar asesores."
+
+    def _build_mapping_from_df(self, df: pd.DataFrame, col_pol: str, col_ase: str) -> Dict[str, str]:
+        mapping = {}
+        for _, row in df.iterrows():
+            pol_raw = str(row.get(col_pol, "")).strip()
+            ase_raw = str(row.get(col_ase, "")).strip()
+            if not pol_raw or pol_raw.lower() in ("nan", "none", "<na>"):
+                continue
+            if not ase_raw or ase_raw.lower() in ("nan", "none", "<na>"):
+                ase_raw = "Por Asignar"
+
+            # Normalizar nombre del asesor si viene con codificación rota
+            if "gu" in ase_raw.lower() and "ab" in ase_raw.lower():
+                ase_raw = "GuíaBien"
+
+            clean_p = clean_policy_value(pol_raw)
+            clean_no_lead = clean_p.lstrip("0")
+            if clean_p:
+                mapping[clean_p] = ase_raw
+            if clean_no_lead:
+                mapping[clean_no_lead] = ase_raw
+        return mapping
+
+
 class CarteraPipeline:
     """Ejecutor del flujo de depuración y lógica de negocio de cartera."""
 
-    def __init__(self, elite_manager: Optional[ClientesEliteManager] = None, no_contactar_service: Optional[NoContactarService] = None):
+    def __init__(
+        self,
+        elite_manager: Optional[ClientesEliteManager] = None,
+        no_contactar_service: Optional[NoContactarService] = None,
+        asesores_service: Optional[AsesoresService] = None,
+    ):
         self.elite_manager = elite_manager or ClientesEliteManager()
         self.no_contactar_service = no_contactar_service or NoContactarService()
+        self.asesores_service = asesores_service or AsesoresService()
 
     def process(
         self,
@@ -470,6 +582,23 @@ class CarteraPipeline:
 
         df_recaudos["_clean_id"] = df_recaudos[col_id_rec].apply(clean_id_value) if col_id_rec in df_recaudos.columns else ""
         df_recaudos["_clean_poliza"] = df_recaudos[col_pol_rec].apply(clean_policy_value) if col_pol_rec in df_recaudos.columns else ""
+
+        # Mapeo de Asesor Principal por número de póliza desde Google Sheets
+        asesores_map, fuente_asesores, status_asesores = self.asesores_service.fetch_mapping()
+
+        def _get_asesor(pol_val):
+            cp = clean_policy_value(pol_val)
+            if cp in asesores_map:
+                return asesores_map[cp]
+            cp_no_zero = cp.lstrip("0")
+            if cp_no_zero in asesores_map:
+                return asesores_map[cp_no_zero]
+            return "Por Asignar"
+
+        if col_pol_actual in df_actual.columns:
+            df_actual["Asesor principal"] = df_actual[col_pol_actual].apply(_get_asesor)
+        else:
+            df_actual["Asesor principal"] = "Por Asignar"
 
         # Columnas operativas
         col_operacion = find_column_name(df_actual, "Operación", ["Operacion", "Tipo Operacion", "Tipo operacion"])
@@ -669,6 +798,65 @@ class CarteraPipeline:
             # Eliminar columnas auxiliares que creamos internamente
             df.drop(columns=["_clean_id", "_clean_poliza"], errors="ignore", inplace=True)
 
+        # =========================================================================
+        # PASO 7: Construcción del Resumen Ejecutivo por Comercial y Hojas por Asesor
+        # =========================================================================
+        df_cobros_todos = df_actual[~mask_devolucion].copy() if not df_actual.empty else pd.DataFrame()
+        resumen_rows = []
+        if not df_cobros_todos.empty:
+            df_cobros_todos["_saldo_num"] = parse_numeric(df_cobros_todos[col_saldo]) if col_saldo in df_cobros_todos.columns else 0.0
+            df_cobros_todos["_dias_num"] = parse_numeric(df_cobros_todos[col_dias_cartera]) if col_dias_cartera in df_cobros_todos.columns else 0
+
+            ai_polizas_set = set(df_alto_impacto[col_pol_actual].apply(clean_policy_value)) if not df_alto_impacto.empty and col_pol_actual in df_alto_impacto.columns else set()
+            deb_fallidos_set = set(df_debitos_fallidos[col_pol_actual].apply(clean_policy_value)) if not df_debitos_fallidos.empty and col_pol_actual in df_debitos_fallidos.columns else set()
+
+            total_cartera_global = df_cobros_todos["_saldo_num"].sum()
+
+            for asesor, grp in df_cobros_todos.groupby("Asesor principal"):
+                grp_polizas = set(grp[col_pol_actual].apply(clean_policy_value))
+                casos_ai = len(grp_polizas.intersection(ai_polizas_set))
+                casos_deb = len(grp_polizas.intersection(deb_fallidos_set))
+
+                saldo_total = grp["_saldo_num"].sum()
+                mask_grp_ai = grp[col_pol_actual].apply(clean_policy_value).isin(ai_polizas_set)
+                saldo_ai = grp.loc[mask_grp_ai, "_saldo_num"].sum()
+                mora_prom = grp.loc[grp["_dias_num"] > 0, "_dias_num"].mean() if (grp["_dias_num"] > 0).any() else 0.0
+                pct_part = (saldo_total / total_cartera_global * 100) if total_cartera_global > 0 else 0.0
+
+                if casos_ai > 0:
+                    accion = f"URGENTE: Cobro inmediato de {casos_ai} casos de Alto Impacto (${saldo_ai:,.0f})"
+                elif casos_deb > 0:
+                    accion = f"ALERTA: Notificar {casos_deb} débitos rechazados por el banco"
+                elif mora_prom >= 30:
+                    accion = f"SEGUIMIENTO: Cobro preventivo mora antigua (promedio {mora_prom:.0f} días)"
+                else:
+                    accion = "REGULAR: Seguimiento preventivo habitual"
+
+                resumen_rows.append({
+                    "Comercial": asesor,
+                    "Total Cartera ($)": saldo_total,
+                    "Pólizas en Mora": len(grp),
+                    "Casos Alto Impacto": casos_ai,
+                    "Saldo Alto Impacto ($)": saldo_ai,
+                    "Débitos Fallidos": casos_deb,
+                    "Días Mora Promedio": round(mora_prom, 1),
+                    "% Cartera": round(pct_part, 1),
+                    "Foco de Acción Sugerido": accion,
+                })
+
+        df_resumen_comerciales = pd.DataFrame(resumen_rows)
+        if not df_resumen_comerciales.empty:
+            df_resumen_comerciales.sort_values(by="Total Cartera ($)", ascending=False, inplace=True)
+
+        # Generar hojas individuales por comercial para Alto Impacto
+        dfs_por_comercial = {}
+        if not df_alto_impacto.empty and "Asesor principal" in df_alto_impacto.columns:
+            for asesor in sorted(df_alto_impacto["Asesor principal"].unique()):
+                sub_df = df_alto_impacto[df_alto_impacto["Asesor principal"] == asesor].copy()
+                clean_name = re.sub(r'[\\/*?:\[\]]', '_', str(asesor))
+                sheet_title = f"AI - {clean_name}"[:31]
+                dfs_por_comercial[sheet_title] = sub_df
+
         return {
             "dfs": {
                 "Base depurada": all_dfs["base"],
@@ -676,6 +864,13 @@ class CarteraPipeline:
                 "Débitos fallidos": all_dfs["debitos_fallidos"],
                 "Alto impacto": all_dfs["alto_impacto"],
                 "Revisar cancelación": all_dfs["revisar_cancelacion"],
+            },
+            "resumen_comerciales": df_resumen_comerciales,
+            "dfs_comerciales": dfs_por_comercial,
+            "asesores_info": {
+                "fuente": fuente_asesores,
+                "estado": status_asesores,
+                "total_mapeadas": len(asesores_map),
             },
             "metrics": {
                 "total_actual": total_actual_cargadas,

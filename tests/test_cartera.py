@@ -59,7 +59,20 @@ def test_pipeline_complete_flow():
             def fetch_no_contactar(self, manual_file=None):
                 return {"999999", "111111"}, "Mock Service", "OK"
 
-        pipeline = CarteraPipeline(elite_manager=elite_mgr, no_contactar_service=MockNoContactarService())
+        class MockAsesoresService:
+            def fetch_mapping(self):
+                return {
+                    "POL-05": "Asesor_NG",
+                    "POL-06": "Asesor_NB",
+                    "POL-07": "Asesor_NG",
+                    "POL-MENSUAL-ALTO": "Asesor_ES",
+                }, "Mock Asesores", "OK"
+
+        pipeline = CarteraPipeline(
+            elite_manager=elite_mgr,
+            no_contactar_service=MockNoContactarService(),
+            asesores_service=MockAsesoresService(),
+        )
 
         # 1. Cartera Actual
         data_actual = [
@@ -291,18 +304,41 @@ def test_pipeline_complete_flow():
         assert dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-05", "Estado_Contacto"].iloc[0] == "No contactar"
         assert dfs["Revisar cancelación"].loc[dfs["Revisar cancelación"]["Póliza"] == "POL-99", "Estado_Contacto"].iloc[0] == "No contactar"
 
-        # Probar exportación a Excel
-        excel_bytes = export_cartera_to_excel(dfs)
+        # Validación de Asesor Principal en las hojas
+        assert "Asesor principal" in dfs["Alto impacto"].columns
+        assert "Asesor principal" in dfs["Base depurada"].columns
+        assert dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-05", "Asesor principal"].iloc[0] == "Asesor_NG"
+        assert dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-06", "Asesor principal"].iloc[0] == "Asesor_NB"
+
+        # Validación de Resumen Comerciales y Hojas por Comercial
+        df_res_com = result["resumen_comerciales"]
+        assert not df_res_com.empty
+        assert "Comercial" in df_res_com.columns
+        assert "Total Cartera ($)" in df_res_com.columns
+        assert "Foco de Acción Sugerido" in df_res_com.columns
+
+        dfs_com = result["dfs_comerciales"]
+        assert "AI - Asesor_NG" in dfs_com
+        assert "AI - Asesor_NB" in dfs_com
+
+        # Probar exportación a Excel con Resumen y Hojas por Asesor
+        excel_bytes = export_cartera_to_excel(
+            dfs,
+            resumen_comerciales=df_res_com,
+            dfs_comerciales=dfs_com,
+        )
         assert len(excel_bytes) > 0
 
         excel_file = pd.ExcelFile(io.BytesIO(excel_bytes))
-        assert set(excel_file.sheet_names) == {
-            "Base depurada",
-            "Devoluciones",
-            "Débitos fallidos",
-            "Alto impacto",
-            "Revisar cancelación",
-        }
+        sheet_names = set(excel_file.sheet_names)
+        assert "Resumen Comerciales" in sheet_names
+        assert "Base depurada" in sheet_names
+        assert "Alto impacto" in sheet_names
+        assert "Débitos fallidos" in sheet_names
+        assert "Devoluciones" in sheet_names
+        assert "Revisar cancelación" in sheet_names
+        assert "AI - Asesor_NG" in sheet_names
+        assert "AI - Asesor_NB" in sheet_names
         print("[PASS] test_pipeline_complete_flow passed")
 
 
