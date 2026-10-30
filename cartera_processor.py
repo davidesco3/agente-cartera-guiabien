@@ -712,7 +712,30 @@ class CarteraPipeline:
 
         if not df_alto_impacto.empty:
             df_alto_impacto["Motivo_Alto_Impacto"] = [ _motivo_impacto(idx) for idx in df_alto_impacto.index ]
-            df_alto_impacto["Mensaje_Contacto"] = df_alto_impacto.apply(_generar_mensaje, axis=1)
+
+            def _generar_mensaje_si_debito_fallido(row):
+                medio = str(row.get(col_medio_pago, "")).strip().lower()
+                # Solo aplica mensaje de débito si el medio de pago es efectivamente Débito
+                if not any(k in medio for k in ["debit", "débit"]):
+                    return ""
+
+                resp_val = row.get(col_resp_cobro, None) if col_resp_cobro in row else None
+                resp_str = "" if (pd.isna(resp_val) or resp_val is None or str(resp_val).lower() in ("nan", "none", "null", "<na>")) else str(resp_val).strip()
+
+                # Si es débito exitoso u ok, no tiene rechazo
+                if re.search(r"exitos|éxitos|debito exitoso|débito exitoso|^ok$", resp_str.lower()):
+                    return ""
+
+                dias_val = row.get(col_dias_cartera, 0)
+                dias_num = parse_numeric(pd.Series([dias_val])).iloc[0]
+
+                # Aplica mensaje si tiene más de 16 días o si ya presenta respuesta de rechazo
+                if dias_num > DIAS_CARTERA_PREMATURO_MAX or resp_str != "":
+                    return _generar_mensaje(row)
+
+                return ""
+
+            df_alto_impacto["Mensaje_Contacto"] = df_alto_impacto.apply(_generar_mensaje_si_debito_fallido, axis=1)
         else:
             df_alto_impacto["Motivo_Alto_Impacto"] = pd.Series(dtype=str)
             df_alto_impacto["Mensaje_Contacto"] = pd.Series(dtype=str)

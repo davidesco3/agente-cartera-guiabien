@@ -197,7 +197,7 @@ def test_pipeline_complete_flow():
                 "Solución": "Salud",
                 "Resp.Cobro": "",
             },
-            # 8c: Periodicidad Mensual y Saldo > 1,000,000 con mora > 0 -> DEBE entrar a Alto Impacto!
+            # 8c: Periodicidad Mensual y Saldo > 1,000,000 con mora > 0 -> DEBE entrar a Alto Impacto! (Transferencia -> sin mensaje)
             {
                 "Nº ident.fis.1": "100011",
                 "Póliza": "POL-MENSUAL-ALTO",
@@ -209,6 +209,18 @@ def test_pipeline_complete_flow():
                 "Nombre Tomador": "Cliente Mensual Alto",
                 "Solución": "Autos",
                 "Resp.Cobro": "",
+            },
+            # 8c2: Alto Impacto por Débito Fallido (> 16 días, saldo > 3M) -> DEBE tener Mensaje_Contacto
+            {
+                "Nº ident.fis.1": "100013",
+                "Póliza": "POL-AI-DEBITO",
+                "Operación": "Cobro",
+                "Medio Pago": "Débito",
+                "Dias Cartera": "22",
+                "Saldo a pagar": "3500000",
+                "Nombre Tomador": "Carlos Alberto Pérez",
+                "Solución": "Vida",
+                "Resp.Cobro": "Fondos insuficientes",
             },
             # 8d: Periodicidad Anual y Saldo 1,500,000 (no llega a 3M) -> NO es mensual, se queda en Base Depurada
             {
@@ -275,12 +287,12 @@ def test_pipeline_complete_flow():
         assert "Hola David," in msg_04
         assert "motivos no especificados" in msg_04
 
-        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45, POL-MENSUAL-ALTO: Mensual > 1M)
+        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45, POL-MENSUAL-ALTO: Mensual > 1M, POL-AI-DEBITO: Débito Fallido > 3M)
         # POL-NEGATIVO (-5) y POL-MORA-CERO (0) NO DEBEN estar en Alto Impacto por mora no positiva!
         # POL-ANUAL-MEDIO (1.5M anual) NO debe estar en Alto Impacto por no ser mensual ni > 3M.
-        assert len(dfs["Alto impacto"]) == 4
+        assert len(dfs["Alto impacto"]) == 5
         polizas_impacto = set(dfs["Alto impacto"]["Póliza"])
-        assert polizas_impacto == {"POL-05", "POL-06", "POL-07", "POL-MENSUAL-ALTO"}
+        assert polizas_impacto == {"POL-05", "POL-06", "POL-07", "POL-MENSUAL-ALTO", "POL-AI-DEBITO"}
         assert "POL-NEGATIVO" not in polizas_impacto
         assert "POL-MORA-CERO" not in polizas_impacto
         assert "POL-ANUAL-MEDIO" not in polizas_impacto
@@ -288,6 +300,17 @@ def test_pipeline_complete_flow():
         # Motivo de Alto Impacto descriptivo
         motivo_mensual = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-MENSUAL-ALTO", "Motivo_Alto_Impacto"].iloc[0]
         assert "Mensual con saldo > $1.000.000" in motivo_mensual
+
+        # REGLA CRÍTICA: Mensaje_Contacto SOLO para los que tienen débito fallido
+        msg_mensual = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-MENSUAL-ALTO", "Mensaje_Contacto"].iloc[0]
+        assert msg_mensual == ""  # Es transferencia -> celda en blanco!
+
+        msg_elite = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-05", "Mensaje_Contacto"].iloc[0]
+        assert msg_elite == ""  # Es efectivo -> celda en blanco!
+
+        msg_ai_deb = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-AI-DEBITO", "Mensaje_Contacto"].iloc[0]
+        assert "Hola Carlos," in msg_ai_deb  # Es débito fallido -> SÍ tiene mensaje!
+        assert "Fondos insuficientes" in msg_ai_deb
 
         # Base Depurada: Contiene POL-08, POL-NEGATIVO, POL-MORA-CERO y POL-ANUAL-MEDIO
         polizas_base = set(dfs["Base depurada"]["Póliza"])
