@@ -103,6 +103,17 @@ def parse_numeric(series: pd.Series) -> pd.Series:
             parts = s.split(".")
             if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
                 s = s.replace(".", "")
+        elif "/1900" in s or "1900-" in s or "/1904" in s:
+            # Manejo de celdas formateadas accidentalmente como fecha de 1900 en Excel (ej. 25/02/1900 -> 56 días)
+            try:
+                dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+                if pd.notna(dt):
+                    excel_base = pd.Timestamp("1899-12-30")
+                    days_diff = (dt - excel_base).days
+                    if 0 < days_diff < 2000:
+                        return float(days_diff)
+            except Exception:
+                pass
 
         try:
             return float(s)
@@ -461,14 +472,23 @@ class CarteraPipeline:
         df_recaudos["_clean_poliza"] = df_recaudos[col_pol_rec].apply(clean_policy_value) if col_pol_rec in df_recaudos.columns else ""
 
         # Columnas operativas
-        col_operacion = find_column_name(df_actual, "Operación", ["Operacion", "Tipo Operacion"])
-        col_medio_pago = find_column_name(df_actual, "Medio Pago", ["Medio de Pago", "Medio pago", "Forma Pago"])
-        col_dias_cartera = find_column_name(df_actual, "Dias Cartera", ["Días Cartera", "Dias mora", "Dias"])
-        col_saldo = find_column_name(df_actual, "Saldo a pagar", ["Saldo", "Valor cartera", "Total a pagar"])
+        col_operacion = find_column_name(df_actual, "Operación", ["Operacion", "Tipo Operacion", "Tipo operacion"])
+        col_medio_pago = find_column_name(df_actual, "Medio Pago", ["Medio de Pago", "Medio pago", "Forma Pago", "Forma pago", "Canal de pago"])
+        col_dias_cartera = find_column_name(df_actual, "Dias Cartera", ["Días Cartera", "Dias mora", "Días mora", "Dias", "Días", "Mora"])
+        col_saldo = find_column_name(df_actual, "Saldo a pagar", ["Saldo", "Saldo actual", "Total a pagar", "Total", "Valor cartera", "Valor a pagar", "Valor prima", "Valor saldo", "Valor"])
         col_tomador = find_column_name(df_actual, "Nombre Tomador", ["Tomador", "Nombre Cliente", "Cliente"])
         col_solucion = find_column_name(df_actual, "Solución", ["Solucion", "Ramo", "Plan", "Producto"])
         col_resp_cobro = find_column_name(df_actual, "Resp.Cobro", ["Resp Cobro", "Respuesta Cobro", "Motivo Rechazo", "Detalle Rechazo"])
-        col_periodicidad = find_column_name(df_actual, "Perioricidad", ["Periodicidad", "Periodo", "Frecuencia", "Frecuencia Pago", "Forma de pago"])
+        col_periodicidad = find_column_name(
+            df_actual,
+            "Perioricidad",
+            [
+                "Periodicidad", "Periodicidad pago", "Periodicidad de pago",
+                "Periodo", "Periodo pago", "Periodo de pago",
+                "Frecuencia", "Frecuencia Pago", "Frecuencia de pago",
+                "Vigencia pago", "Forma de pago", "Forma Pago"
+            ]
+        )
 
         # Valores auxiliares para lógica
         operacion_series = df_actual[col_operacion].astype(str).str.strip().str.lower() if col_operacion in df_actual.columns else pd.Series([""] * len(df_actual))
@@ -498,43 +518,10 @@ class CarteraPipeline:
         base_medio_pago = df_base[col_medio_pago].astype(str).str.strip().str.lower() if col_medio_pago in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
         base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
         base_saldo = parse_numeric(df_base[col_saldo]) if col_saldo in df_base.columns else pd.Series([0.0] * len(df_base), index=df_base.index)
+        base_periodicidad = df_base[col_periodicidad].astype(str).str.strip().str.lower() if col_periodicidad in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
+        base_clean_id = df_base["_clean_id"]
 
-        # =========================================================================
-        # PASO 2: Excluir Débitos Prematuros
-        # Medio Pago == 'Débito' y Dias Cartera <= 16 -> Eliminar del análisis
-        # =========================================================================
-        mask_debito = base_medio_pago.str.contains("debit|débit", na=False)
-        mask_prematuro = mask_debito & (base_dias_cartera <= DIAS_CARTERA_PREMATURO_MAX)
-
-        total_prematuros_excluidos = int(mask_prematuro.sum())
-        # Excluir de df_base
-        df_base = df_base[~mask_prematuro].copy()
-
-        # Recalcular series auxiliares para df_base tras exclusión
-        base_medio_pago = df_base[col_medio_pago].astype(str).str.strip().str.lower() if col_medio_pago in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
-        base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
-        base_saldo = parse_numeric(df_base[col_saldo]) if col_saldo in df_base.columns else pd.Series([0.0] * len(df_base), index=df_base.index)
-
-        # =========================================================================
-        # PASO 3: Separar Débitos Fallidos y Crear Mensaje
-        # Medio Pago == 'Débito' y Dias Cartera > 16 -> Mover a df_debitos_fallidos
-        # REGLA: Excluir los que digan 'Débito exitoso' (pues a ellos no les falló)
-        # =========================================================================
-        base_resp_cobro = df_base[col_resp_cobro].astype(str).str.strip().str.lower() if col_resp_cobro in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
-        mask_debito_rem = base_medio_pago.str.contains("debit|débit", na=False)
-
-        # Detectar débitos que resultaron exitosos
-        mask_debito_exitoso = mask_debito_rem & base_resp_cobro.str.contains(r"exitos|éxitos|debito exitoso|débito exitoso|^ok$", na=False)
-        total_debitos_exitosos_excluidos = int(mask_debito_exitoso.sum())
-
-        # Débitos fallidos reales (mora > 16 y sin éxito reportado)
-        mask_fallidos = mask_debito_rem & (base_dias_cartera > DIAS_CARTERA_PREMATURO_MAX) & (~mask_debito_exitoso)
-
-        df_debitos_fallidos = df_base[mask_fallidos].copy()
-        # Retirar de df_base tanto los fallidos como los exitosos (los exitosos ya se cobraron)
-        df_base = df_base[~(mask_fallidos | mask_debito_exitoso)].copy()
-
-        # Generar Mensaje_Contacto en df_debitos_fallidos tomando SOLO el primer nombre
+        # Función auxiliar de generación de mensaje para contacto
         def _generar_mensaje(row):
             primer_nombre = extract_first_name(row.get(col_tomador, ""))
             solucion = str(row.get(col_solucion, "")).strip() if col_solucion in row and pd.notna(row.get(col_solucion)) else "seguros"
@@ -555,41 +542,33 @@ class CarteraPipeline:
                 resp_cobro=resp_str,
             )
 
-        if not df_debitos_fallidos.empty:
-            df_debitos_fallidos["Mensaje_Contacto"] = df_debitos_fallidos.apply(_generar_mensaje, axis=1)
-        else:
-            df_debitos_fallidos["Mensaje_Contacto"] = pd.Series(dtype=str)
-
         # =========================================================================
-        # PASO 4: Clientes de Alto Impacto (Urgentes)
-        # REGLA ESTRICTA: Solo pólizas con Dias Cartera positivos (> 0).
-        # Extraer hacia df_alto_impacto si cumple mora > 0 Y cualquiera de las siguientes:
+        # PASO 2: Clientes de Alto Impacto (Prioridad Comercial y Financiera)
+        # REGLA ESTRICTA: Pólizas con Dias Cartera estrictamente positivos (> 0).
+        # Criterios:
         # a) Nº ident.fis.1 cruza positivamente con clientes_elite.csv
         # b) Saldo a pagar > 3,000,000
         # c) Dias Cartera >= 45
         # d) Periodicidad mensual Y Saldo a pagar > 1,000,000
+        # NOTA CLAVE: Alto Impacto tiene prioridad ejecutiva para que pólizas críticas
+        # no sean descartadas como débitos prematuros ni se confundan con débitos ordinarios.
         # =========================================================================
         elite_set = self.elite_manager.load_elite_set()
-
-        base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
-        base_saldo = parse_numeric(df_base[col_saldo]) if col_saldo in df_base.columns else pd.Series([0.0] * len(df_base), index=df_base.index)
-        base_periodicidad = df_base[col_periodicidad].astype(str).str.strip().str.lower() if col_periodicidad in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
-        base_clean_id = df_base["_clean_id"]
 
         cond_mora_positiva = base_dias_cartera > 0
         cond_elite = base_clean_id.isin(elite_set)
         cond_saldo = base_saldo > SALDO_ALTO_IMPACTO_MIN
         cond_dias = base_dias_cartera >= DIAS_CARTERA_ALTO_IMPACTO_MIN
-        cond_mensual = base_periodicidad.str.contains("mensua", na=False)
+        cond_mensual = base_periodicidad.str.contains(r"^m$|mensua|mes", case=False, na=False)
         cond_mensual_saldo = cond_mensual & (base_saldo > SALDO_ALTO_IMPACTO_MENSUAL_MIN)
 
         mask_alto_impacto = cond_mora_positiva & (cond_elite | cond_saldo | cond_dias | cond_mensual_saldo)
 
         df_alto_impacto = df_base[mask_alto_impacto].copy()
-        # Retirar de df_base
+        # Retirar de df_base para que no se dupliquen
         df_base = df_base[~mask_alto_impacto].copy()
 
-        # Añadir columna descriptiva de motivo de impacto (gran valor para el usuario operativo)
+        # Añadir columna descriptiva de motivo de impacto
         def _motivo_impacto(idx):
             motivos = []
             if cond_elite.loc[idx]:
@@ -604,8 +583,51 @@ class CarteraPipeline:
 
         if not df_alto_impacto.empty:
             df_alto_impacto["Motivo_Alto_Impacto"] = [ _motivo_impacto(idx) for idx in df_alto_impacto.index ]
+            df_alto_impacto["Mensaje_Contacto"] = df_alto_impacto.apply(_generar_mensaje, axis=1)
         else:
             df_alto_impacto["Motivo_Alto_Impacto"] = pd.Series(dtype=str)
+            df_alto_impacto["Mensaje_Contacto"] = pd.Series(dtype=str)
+
+        # Recalcular series auxiliares para df_base (pólizas ordinarias restantes)
+        base_medio_pago = df_base[col_medio_pago].astype(str).str.strip().str.lower() if col_medio_pago in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
+        base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
+        base_saldo = parse_numeric(df_base[col_saldo]) if col_saldo in df_base.columns else pd.Series([0.0] * len(df_base), index=df_base.index)
+
+        # =========================================================================
+        # PASO 3: Excluir Débitos Prematuros Ordinarios
+        # Medio Pago == 'Débito' y Dias Cartera <= 16 -> Eliminar del análisis
+        # =========================================================================
+        mask_debito = base_medio_pago.str.contains("debit|débit", na=False)
+        mask_prematuro = mask_debito & (base_dias_cartera <= DIAS_CARTERA_PREMATURO_MAX)
+
+        total_prematuros_excluidos = int(mask_prematuro.sum())
+        # Excluir de df_base
+        df_base = df_base[~mask_prematuro].copy()
+
+        # Recalcular series auxiliares para df_base tras exclusión
+        base_medio_pago = df_base[col_medio_pago].astype(str).str.strip().str.lower() if col_medio_pago in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
+        base_dias_cartera = parse_numeric(df_base[col_dias_cartera]) if col_dias_cartera in df_base.columns else pd.Series([0] * len(df_base), index=df_base.index)
+        base_resp_cobro = df_base[col_resp_cobro].astype(str).str.strip().str.lower() if col_resp_cobro in df_base.columns else pd.Series([""] * len(df_base), index=df_base.index)
+
+        # =========================================================================
+        # PASO 4: Separar Débitos Fallidos Ordinarios y Crear Mensaje
+        # Medio Pago == 'Débito' y Dias Cartera > 16 -> Mover a df_debitos_fallidos
+        # REGLA: Excluir los que digan 'Débito exitoso' (pues ya pagaron)
+        # =========================================================================
+        mask_debito_rem = base_medio_pago.str.contains("debit|débit", na=False)
+        mask_debito_exitoso = mask_debito_rem & base_resp_cobro.str.contains(r"exitos|éxitos|debito exitoso|débito exitoso|^ok$", na=False)
+        total_debitos_exitosos_excluidos = int(mask_debito_exitoso.sum())
+
+        mask_fallidos = mask_debito_rem & (base_dias_cartera > DIAS_CARTERA_PREMATURO_MAX) & (~mask_debito_exitoso)
+
+        df_debitos_fallidos = df_base[mask_fallidos].copy()
+        # Retirar de df_base tanto los fallidos como los exitosos
+        df_base = df_base[~(mask_fallidos | mask_debito_exitoso)].copy()
+
+        if not df_debitos_fallidos.empty:
+            df_debitos_fallidos["Mensaje_Contacto"] = df_debitos_fallidos.apply(_generar_mensaje, axis=1)
+        else:
+            df_debitos_fallidos["Mensaje_Contacto"] = pd.Series(dtype=str)
 
         # =========================================================================
         # PASO 5: Pólizas a Revisar por Posible Cancelación
@@ -671,5 +693,13 @@ class CarteraPipeline:
                 "fuente": fuente_no_contactar,
                 "estado": status_no_contactar,
                 "total_excluidos": len(no_contactar_set),
+            },
+            "diagnostico_alto_impacto": {
+                "col_periodicidad": col_periodicidad,
+                "col_saldo": col_saldo,
+                "col_dias_cartera": col_dias_cartera,
+                "total_dias_gt_0": int((parse_numeric(df_actual[col_dias_cartera]) > 0).sum()) if col_dias_cartera in df_actual.columns else 0,
+                "total_saldo_gt_1m": int((parse_numeric(df_actual[col_saldo]) > SALDO_ALTO_IMPACTO_MENSUAL_MIN).sum()) if col_saldo in df_actual.columns else 0,
+                "total_mensuales": int(df_actual[col_periodicidad].astype(str).str.lower().str.contains(r"^m$|mensua|mes", na=False).sum()) if col_periodicidad in df_actual.columns else 0,
             },
         }

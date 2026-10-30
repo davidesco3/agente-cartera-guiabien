@@ -750,7 +750,35 @@ if "resultados_cartera" in st.session_state:
     # 2. Alto Impacto
     with tabs[1]:
         st.caption("Pólizas con alta prioridad comercial o riesgo financiero. Solo incluye registros con días de cartera estrictamente positivos (> 0): Clientes Élite, saldo > $3M, mora ≥ 45 días o periodicidad mensual con saldo > $1M.")
-        st.dataframe(dfs["Alto impacto"], use_container_width=True, height=350)
+        df_ai = dfs["Alto impacto"]
+        st.dataframe(df_ai, use_container_width=True, height=350)
+
+        diag = res.get("diagnostico_alto_impacto", {})
+        if diag:
+            with st.expander("🔍 Ver Auditoría de Columnas y Detección de Alto Impacto"):
+                c_d1, c_d2, c_d3 = st.columns(3)
+                with c_d1:
+                    st.markdown(f"**Periodicidad detectada:** `{diag.get('col_periodicidad', 'N/A')}`")
+                    st.caption(f"Pólizas mensuales en archivo: **{diag.get('total_mensuales', 0):,}**")
+                with c_d2:
+                    st.markdown(f"**Saldo detectado:** `{diag.get('col_saldo', 'N/A')}`")
+                    st.caption(f"Pólizas saldo > $1M: **{diag.get('total_saldo_gt_1m', 0):,}**")
+                with c_d3:
+                    st.markdown(f"**Días Cartera detectado:** `{diag.get('col_dias_cartera', 'N/A')}`")
+                    st.caption(f"Pólizas con mora > 0: **{diag.get('total_dias_gt_0', 0):,}**")
+
+        if not df_ai.empty and "Mensaje_Contacto" in df_ai.columns:
+            debitos_en_ai = df_ai[df_ai["Mensaje_Contacto"].astype(str).str.strip() != ""]
+            if not debitos_en_ai.empty:
+                with st.expander(f"💬 Mensajes de Contacto para Débitos de Alto Impacto ({len(debitos_en_ai)})"):
+                    st.caption("Mensajes listos para WhatsApp de pólizas prioritarias asociadas a débito:")
+                    for i, (_, row) in enumerate(debitos_en_ai.head(10).iterrows(), start=1):
+                        tomador = row.get("Nombre Tomador", "Cliente")
+                        pol = row.get("Póliza", "")
+                        msg = row.get("Mensaje_Contacto", "")
+                        motivo = row.get("Motivo_Alto_Impacto", "")
+                        st.markdown(f"**{i}. {tomador} (Póliza: {pol})** — *{motivo}*", unsafe_allow_html=True)
+                        st.text_area(label=f"Mensaje Alto Impacto #{i}", value=msg, height=75, key=f"msg_ai_txt_{i}")
 
     # 3. Débitos Fallidos
     with tabs[2]:
