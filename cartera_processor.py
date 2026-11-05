@@ -10,6 +10,7 @@ import requests
 from config import (
     ASESORES_CACHE_PATH,
     CLIENTES_ELITE_PATH,
+    DIAS_CARTERA_ALTO_IMPACTO_MENSUAL_MIN,
     DIAS_CARTERA_ALTO_IMPACTO_MIN,
     DIAS_CARTERA_PREMATURO_MAX,
     GOOGLE_SHEETS_ASESORES_URL,
@@ -678,7 +679,7 @@ class CarteraPipeline:
         # a) Nº ident.fis.1 cruza positivamente con clientes_elite.csv
         # b) Saldo a pagar > 3,000,000
         # c) Dias Cartera >= 45
-        # d) Periodicidad mensual Y Saldo a pagar > 1,000,000
+        # d) Periodicidad mensual Y Saldo a pagar > 1,000,000 Y Dias Cartera >= 20
         # NOTA CLAVE: Alto Impacto tiene prioridad ejecutiva para que pólizas críticas
         # no sean descartadas como débitos prematuros ni se confundan con débitos ordinarios.
         # =========================================================================
@@ -689,7 +690,11 @@ class CarteraPipeline:
         cond_saldo = base_saldo > SALDO_ALTO_IMPACTO_MIN
         cond_dias = base_dias_cartera >= DIAS_CARTERA_ALTO_IMPACTO_MIN
         cond_mensual = base_periodicidad.str.contains(r"^m$|mensua|mes", case=False, na=False)
-        cond_mensual_saldo = cond_mensual & (base_saldo > SALDO_ALTO_IMPACTO_MENSUAL_MIN)
+        cond_mensual_saldo = (
+            cond_mensual
+            & (base_saldo > SALDO_ALTO_IMPACTO_MENSUAL_MIN)
+            & (base_dias_cartera >= DIAS_CARTERA_ALTO_IMPACTO_MENSUAL_MIN)
+        )
 
         mask_alto_impacto = cond_mora_positiva & (cond_elite | cond_saldo | cond_dias | cond_mensual_saldo)
 
@@ -707,7 +712,7 @@ class CarteraPipeline:
             if cond_dias.loc[idx]:
                 motivos.append("Mora >= 45 días")
             if cond_mensual_saldo.loc[idx]:
-                motivos.append("Mensual con saldo > $1.000.000")
+                motivos.append("Mensual con saldo > $1.000.000 y mora >= 20 días")
             return " + ".join(motivos)
 
         if not df_alto_impacto.empty:

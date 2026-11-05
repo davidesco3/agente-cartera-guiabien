@@ -57,10 +57,11 @@ Agente de cartera/
      > *"Hola {Nombre Tomador}, te escribe Paula de GuíaBien... te estamos contactando porque nos notifica SURA que el débito de tu póliza de {Solución} número {Póliza} fue rechazado por el banco por {Resp.Cobro}. Por favor revisa con tu banco para evitar que perdamos cobertura."*
      *(Si `Resp.Cobro` está vacío o nulo, se reemplaza por "motivos no especificados")*.
 5. **Paso 4: Clientes de Alto Impacto (Urgentes)**:
-   - Se extraen a `Alto impacto` los registros que cumplan cualquiera de estas tres condiciones:
-     - Documento en `data/clientes_elite.csv`.
+   - Se extraen a `Alto impacto` los registros con días de cartera estrictamente positivos (`Dias Cartera > 0`) que cumplan cualquiera de estas condiciones:
+     - Documento en `data/clientes_elite.csv` (Clientes Élite).
      - `Saldo a pagar > 3,000,000`.
      - `Dias Cartera >= 45`.
+     - Periodicidad mensual con `Saldo a pagar > 1,000,000` y `Dias Cartera >= 20`.
    - Se añade la columna `Motivo_Alto_Impacto` para que el equipo conozca la causal exacta.
 6. **Paso 5: Pólizas a Revisar por Posible Cancelación**:
    - Pólizas presentes en la *Cartera Semana Anterior* que **NO** están en la *Cartera Actual* y **TAMPOCO** en el *Informe de Recaudos*.

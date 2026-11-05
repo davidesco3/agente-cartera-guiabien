@@ -197,16 +197,29 @@ def test_pipeline_complete_flow():
                 "Solución": "Salud",
                 "Resp.Cobro": "",
             },
-            # 8c: Periodicidad Mensual y Saldo > 1,000,000 con mora > 0 -> DEBE entrar a Alto Impacto! (Transferencia -> sin mensaje)
+            # 8c: Periodicidad Mensual y Saldo > 1,000,000 con mora >= 20 días -> DEBE entrar a Alto Impacto! (Transferencia -> sin mensaje)
             {
                 "Nº ident.fis.1": "100011",
                 "Póliza": "POL-MENSUAL-ALTO",
                 "Operación": "Cobro",
                 "Medio Pago": "Transferencia",
-                "Dias Cartera": "8",
+                "Dias Cartera": "22",
                 "Saldo a pagar": "1500000",
                 "Perioricidad": "Mensual",
                 "Nombre Tomador": "Cliente Mensual Alto",
+                "Solución": "Autos",
+                "Resp.Cobro": "",
+            },
+            # 8c-bis: Periodicidad Mensual y Saldo > 1,000,000 PERO mora < 20 días (ej. 8 días) -> NO entra a Alto Impacto, queda en Base Depurada!
+            {
+                "Nº ident.fis.1": "100014",
+                "Póliza": "POL-MENSUAL-BAJA-MORA",
+                "Operación": "Cobro",
+                "Medio Pago": "Transferencia",
+                "Dias Cartera": "8",
+                "Saldo a pagar": "1500000",
+                "Perioricidad": "Mensual",
+                "Nombre Tomador": "Cliente Mensual Mora Temprana",
                 "Solución": "Autos",
                 "Resp.Cobro": "",
             },
@@ -287,19 +300,21 @@ def test_pipeline_complete_flow():
         assert "Hola David," in msg_04
         assert "motivos no especificados" in msg_04
 
-        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45, POL-MENSUAL-ALTO: Mensual > 1M, POL-AI-DEBITO: Débito Fallido > 3M)
+        # Alto Impacto (POL-05: Élite, POL-06: Saldo > 3M, POL-07: Días >= 45, POL-MENSUAL-ALTO: Mensual > 1M y Días >= 20, POL-AI-DEBITO: Débito Fallido > 3M)
         # POL-NEGATIVO (-5) y POL-MORA-CERO (0) NO DEBEN estar en Alto Impacto por mora no positiva!
         # POL-ANUAL-MEDIO (1.5M anual) NO debe estar en Alto Impacto por no ser mensual ni > 3M.
+        # POL-MENSUAL-BAJA-MORA (1.5M mensual pero 8 días mora < 20) NO debe estar en Alto Impacto!
         assert len(dfs["Alto impacto"]) == 5
         polizas_impacto = set(dfs["Alto impacto"]["Póliza"])
         assert polizas_impacto == {"POL-05", "POL-06", "POL-07", "POL-MENSUAL-ALTO", "POL-AI-DEBITO"}
         assert "POL-NEGATIVO" not in polizas_impacto
         assert "POL-MORA-CERO" not in polizas_impacto
         assert "POL-ANUAL-MEDIO" not in polizas_impacto
+        assert "POL-MENSUAL-BAJA-MORA" not in polizas_impacto
 
         # Motivo de Alto Impacto descriptivo
         motivo_mensual = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-MENSUAL-ALTO", "Motivo_Alto_Impacto"].iloc[0]
-        assert "Mensual con saldo > $1.000.000" in motivo_mensual
+        assert "Mensual con saldo > $1.000.000 y mora >= 20 días" in motivo_mensual
 
         # REGLA CRÍTICA: Mensaje_Contacto SOLO para los que tienen débito fallido
         msg_mensual = dfs["Alto impacto"].loc[dfs["Alto impacto"]["Póliza"] == "POL-MENSUAL-ALTO", "Mensaje_Contacto"].iloc[0]
@@ -312,12 +327,13 @@ def test_pipeline_complete_flow():
         assert "Hola Carlos," in msg_ai_deb  # Es débito fallido -> SÍ tiene mensaje!
         assert "Fondos insuficientes" in msg_ai_deb
 
-        # Base Depurada: Contiene POL-08, POL-NEGATIVO, POL-MORA-CERO y POL-ANUAL-MEDIO
+        # Base Depurada: Contiene POL-08, POL-NEGATIVO, POL-MORA-CERO, POL-ANUAL-MEDIO y POL-MENSUAL-BAJA-MORA
         polizas_base = set(dfs["Base depurada"]["Póliza"])
         assert "POL-08" in polizas_base
         assert "POL-NEGATIVO" in polizas_base
         assert "POL-MORA-CERO" in polizas_base
         assert "POL-ANUAL-MEDIO" in polizas_base
+        assert "POL-MENSUAL-BAJA-MORA" in polizas_base
 
         # Revisar Cancelación: Solo POL-99
         assert len(dfs["Revisar cancelación"]) == 1
